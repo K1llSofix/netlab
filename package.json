@@ -1,0 +1,93 @@
+{
+  "name": "netlab",
+  "productName": "NetLab",
+  "version": "1.1.0",
+  "private": true,
+  "description": "NetLab — учебный симулятор компьютерных сетей",
+  "author": "NetLab",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"tests/*.test.js\"",
+    "smoke": "node tests/smoke.js",
+    "dist": "electron-builder --win --publish never",
+    "release": "electron-builder --win --publish always"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "electron": "^44.4.3",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "ru.netlab.simulator",
+    "productName": "NetLab",
+    "copyright": "NetLab",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "index.html",
+      "css/**/*",
+      "js/**/*",
+      "electron/**/*",
+      "build/icon.png",
+      "build/release-notes.md",
+      "package.json"
+    ],
+    "fileAssociations": [
+      {
+        "ext": "netlab",
+        "name": "NetLab.Scheme",
+        "description": "Схема сети NetLab",
+        "icon": "build/icon.ico"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "NetLab",
+      "installerLanguages": [
+        "ru_RU"
+      ],
+      "language": "1049",
+      "artifactName": "NetLab-Setup-${version}.exe"
+    },
+    "portable": {
+      "artifactName": "NetLab-${version}-portable.exe"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "K1llSofix",
+        "repo": "netlab",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  }
+}

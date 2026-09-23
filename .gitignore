@@ -1,0 +1,8 @@
+node_modules/
+dist/
+# тестовые сборки обновления (tests/smoke-update.js)
+upd-test/
+.upd-test/
+# локальные настройки инструментов
+.claude/
+*.log
