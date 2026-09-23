@@ -5,11 +5,33 @@
 'use strict';
 
 const { app, ipcMain, shell } = require('electron');
+const fs = require('fs');
+const path = require('path');
 const pkg = require('../package.json');
 
 const TEST_URL = process.env.NETLAB_UPDATE_URL || '';
 const PORTABLE = !!process.env.PORTABLE_EXECUTABLE_DIR;
-const PUB = [].concat((pkg.build && pkg.build.publish) || [])[0] || null;
+
+/**
+ * Куда публикуются обновления. В собранной программе раздела build в package.json нет
+ * (electron-builder его вырезает) — адрес берём из resources/app-update.yml, который
+ * electron-builder создаёт как раз для обновлений. При запуске через npm start — из package.json.
+ */
+function readPublish() {
+  if (app.isPackaged) {
+    try {
+      const o = {};
+      for (const line of fs.readFileSync(path.join(process.resourcesPath, 'app-update.yml'), 'utf8').split(/\r?\n/)) {
+        const m = /^([A-Za-z]\w*):\s*(.*?)\s*$/.exec(line);
+        if (m) o[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+      }
+      if (o.provider) return o;
+    } catch (e) { /* файла нет — ниже package.json */ }
+  }
+  return [].concat((pkg.build && pkg.build.publish) || [])[0] || null;
+}
+
+const PUB = readPublish();
 
 let updater = null;
 function load() {

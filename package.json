@@ -1,7 +1,7 @@
 {
   "name": "netlab",
   "productName": "NetLab",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "NetLab — учебный симулятор компьютерных сетей",
   "author": "NetLab",

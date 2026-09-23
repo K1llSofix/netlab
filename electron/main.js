@@ -255,6 +255,8 @@ function runSmoke() {
         a.net.runUntilIdle();
         a.openDevice(pc.id, 'cli');
         const r = { desktop: !!window.netlabDesktop, devices: a.net.devices.size, received: got };
+        const u = await window.netlabDesktop.updateStatus();
+        r.updates = { supported: u.supported, page: u.page, reason: u.reason };
         const target = ${JSON.stringify(saveTo)};
         if (target) {
           const saved = await window.netlabDesktop.saveFile({ text: JSON.stringify(a.net.serialize()), path: target, saveAs: false });
@@ -288,6 +290,8 @@ function runSmoke() {
     }
     const ok = !!res && res.desktop && errors.length === 0 &&
       (res.openedFile ? res.devices > 0 && !res.dirty : res.received === 3 && !!res.notes && res.notes.shown && res.notes.items > 0 &&
+        // в собранной программе адрес обновлений обязан найтись (в 1.1.0 его не было — обновления не работали)
+        (!app.isPackaged || (!!res.updates && res.updates.supported && /^https:\/\//.test(res.updates.page))) &&
         (!saveTo || (res.savedTo === saveTo && res.reopenedDevices === res.devices && !res.dirtyAfterOpen && res.dirtyAfterEdit)));
     process.stdout.write('SMOKE ' + JSON.stringify({ ok, res, errors }) + '\n');
     app.exit(ok ? 0 : 1);
@@ -323,7 +327,7 @@ function runSmokeUpdate() {
       if (out.offerShown) {
         await shot(SMOKE_UPDATE.replace(/\.png$/i, '') + '-offer.png');
         await js('document.querySelector(".upd-offer").closest(".modal").querySelector(".actions .btn.primary").click()');
-        out.downloaded = await wait(() => upd.state.downloaded, 120000);
+        out.downloaded = await wait(() => upd.state.downloaded, 600000);
         out.readyShown = await wait(() => js('!!document.querySelector(".upd-card.ready")'), 5000);
         await shot(SMOKE_UPDATE);
       }
