@@ -33,6 +33,7 @@
       if (!NS.Network.isData(p)) return;
       p.mode = 'access';
       p.vlan = 1;
+      p.voiceVlan = null;
       p.nativeVlan = 1;
       p.allowed = 'all';
       p.routed = false;
@@ -63,7 +64,7 @@
 
     portCarries(p, vlan) {
       if (p.routed || !NS.Network.isData(p)) return false;
-      return p.mode === 'trunk' ? U.vlanInList(p.allowed, vlan) : p.vlan === vlan;
+      return p.mode === 'trunk' ? U.vlanInList(p.allowed, vlan) : p.vlan === vlan || (p.voiceVlan != null && p.voiceVlan === vlan);
     }
 
     ifaceUp(f) {
@@ -282,17 +283,20 @@
           return;
         }
       } else {
-        if (frame.vlan != null) {
-          this.drop(frame, 'Кадр с тегом 802.1Q пришёл на access-порт ' + port.name);
+        if (frame.vlan != null && frame.vlan === port.voiceVlan) {
+          vlan = port.voiceVlan; // голосовой VLAN: IP-телефон помечает свои кадры тегом
+        } else if (frame.vlan != null) {
+          this.drop(frame, 'Кадр с тегом 802.1Q (VLAN ' + frame.vlan + ') пришёл на access-порт ' + port.name + (port.voiceVlan ? ' (voice vlan ' + port.voiceVlan + ')' : ''));
           return;
+        } else {
+          vlan = port.vlan;
         }
-        vlan = port.vlan;
       }
       if (!this.vlans.has(vlan)) {
         this.drop(frame, 'VLAN ' + vlan + ' не создан на ' + this.name);
         return;
       }
-      if (port.mode === 'access' && port.ps && port.ps.enabled && !this.portSecurityOk(i, port, frame)) return;
+      if (port.mode === 'access' && vlan === port.vlan && port.ps && port.ps.enabled && !this.portSecurityOk(i, port, frame)) return;
 
       if (!U.isMulticastMac(frame.src)) {
         this.macTable.set(vlan + '|' + frame.src, { mac: frame.src, vlan, port: i, time: this.net.time });
@@ -362,6 +366,8 @@
       if (p.mode === 'trunk') {
         if (!U.vlanInList(p.allowed, vlan)) return false;
         tag = vlan === p.nativeVlan ? null : vlan;
+      } else if (p.voiceVlan != null && p.voiceVlan === vlan && p.vlan !== vlan) {
+        tag = vlan;
       } else {
         if (p.vlan !== vlan) return false;
         tag = null;
@@ -390,6 +396,7 @@
       const o = super.serializePort(p);
       if (!NS.Network.isData(p)) return o;
       Object.assign(o, { mode: p.mode, vlan: p.vlan, nativeVlan: p.nativeVlan, allowed: p.allowed });
+      if (p.voiceVlan != null) o.voiceVlan = p.voiceVlan;
       if (p.routed) o.routed = true;
       if (p.ps && (p.ps.enabled || p.ps.macs.some((m) => m.sticky || m.manual))) {
         o.ps = { enabled: p.ps.enabled, max: p.ps.max, sticky: p.ps.sticky, violation: p.ps.violation, macs: p.ps.macs.filter((m) => m.sticky || m.manual).map((m) => Object.assign({}, m)) };
@@ -402,6 +409,7 @@
       if (!NS.Network.isData(p)) return;
       p.mode = sp.mode === 'trunk' ? 'trunk' : 'access';
       p.vlan = Number(sp.vlan) || 1;
+      p.voiceVlan = Number(sp.voiceVlan) || null;
       p.nativeVlan = Number(sp.nativeVlan) || 1;
       p.allowed = typeof sp.allowed === 'string' ? sp.allowed : 'all';
       p.routed = !!sp.routed && this.l3;

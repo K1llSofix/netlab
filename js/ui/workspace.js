@@ -143,11 +143,18 @@
 
       for (const sh of net.shapes) this.renderShape(sh);
       for (const l of net.links.values()) this.renderLink(l);
+      if (NS.bt) {
+        NS.bt.check(net);
+        for (const d of net.devices.values()) {
+          const o = d.btRt && d.btRt.audio ? net.getDevice(d.btRt.audio) : null;
+          if (o) this.gLinks.appendChild(s('line', { class: 'link-line c-bt', x1: d.x, y1: d.y, x2: o.x, y2: o.y }, s('title', null, 'Bluetooth: ' + d.name + ' → ' + o.name)));
+        }
+      }
 
       for (const d of net.devices.values()) {
         const g = s('g', { class: 'dev' + (this.selection.has(d.id) ? ' selected' : '') + (d.power ? '' : ' off') + (this.cableSrc && this.cableSrc.dev === d.id ? ' cable-src' : '') + (this.pduSrc === d.id ? ' cable-src' : ''), 'data-dev': d.id, transform: 'translate(' + d.x + ',' + d.y + ')' });
         g.appendChild(s('rect', { class: 'selbox', x: -40, y: -29, width: 80, height: 84, rx: 9 }));
-        const icon = UI.svgFrom(UI.deviceIcon(d.type, d.model), { x: -ICON_W / 2, y: -ICON_H / 2 - 4, width: ICON_W, height: ICON_H, viewBox: '0 0 64 48', class: 'icon' });
+        const icon = UI.svgFrom(UI.deviceIconFor ? UI.deviceIconFor(d) : UI.deviceIcon(d.type, d.model), { x: -ICON_W / 2, y: -ICON_H / 2 - 4, width: ICON_W, height: ICON_H, viewBox: '0 0 64 48', class: 'icon' });
         g.appendChild(icon);
         g.appendChild(s('rect', { class: 'hit', x: -32, y: -27, width: 64, height: 54 }));
         g.appendChild(s('text', { class: 'model', y: 31 }, d.model));
@@ -161,6 +168,8 @@
             if (y > 57 + 12 * 2) break;
           }
         }
+        const status = UI.deviceStatusText ? UI.deviceStatusText(d) : null;
+        if (status) g.appendChild(s('text', { class: 'addr dev-status ' + (status.cls || ''), y: app.settings.showIps && d.ifaces && d.ifaces.some((f) => f.ip != null && f.kind !== 'loop') ? 70 : 57 }, status.text));
         if (d.unreadCount && d.unreadCount() > 0) {
           const n = d.unreadCount();
           g.appendChild(s('g', { class: 'badge badge-mail', transform: 'translate(25,-22)' }, s('circle', { r: 8.5 }), s('text', { y: 3.5 }, n > 9 ? '9+' : String(n))));
@@ -700,6 +709,7 @@
     addMenu(cx, cy, w) {
       const items = [];
       for (const c of UI.DEVICE_CATEGORIES) {
+        if (c.noQuickAdd) continue;
         items.push({ title: c.label });
         for (const m of c.models) {
           const spec = NS.models.get(m);

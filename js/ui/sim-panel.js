@@ -9,7 +9,9 @@
   const h = UI.h;
 
   const MAX_ROWS = 800;
-  const FILTERABLE = ['ARP', 'ICMP', 'DHCP', 'DNS', 'TCP', 'HTTP', 'SMTP', 'POP3', 'TELNET', 'SSH', 'TFTP', 'MAIL', 'UDP'];
+  const BASE = ['ARP', 'ICMP', 'DHCP', 'DNS', 'TCP', 'HTTP', 'SMTP', 'POP3', 'TELNET', 'SSH', 'TFTP', 'MAIL', 'UDP'];
+  // плюс протоколы, которые регистрируют модули ядра (IPv6, SNMP, VPN, VoIP, IoT…)
+  const FILTERABLE = BASE.concat(Object.keys(P.PROTOCOLS).filter((k) => k !== 'OTHER' && !BASE.includes(k)));
 
   class SimPanel {
     constructor(app, el) {

@@ -35,7 +35,18 @@
       case 'pc':
       case 'laptop':
       case 'tablet':
+      case 'smartphone':
         return [phys, cfg, DW.desktopTab(app, id), attr];
+      case 'ipphone':
+        return [phys, cfg, DW.phoneTab(app, id), attr];
+      case 'iot':
+        return [phys, cfg, DW.thingTab(app, id), attr];
+      case 'mcu':
+        return [phys, cfg, DW.programTab(app, id), attr];
+      case 'sbc':
+        return [phys, cfg, DW.programTab(app, id), DW.desktopTab(app, id), attr];
+      case 'iotcomp':
+        return [phys, cfg, DW.compTab(app, id), attr];
       case 'server':
         return [phys, cfg, DW.servicesTab(app, id), DW.desktopTab(app, id), attr];
       case 'printer':
@@ -48,12 +59,14 @@
     }
   }
 
-  const SIZES = { pc: [760, 600], laptop: [760, 600], tablet: [760, 600], server: [800, 640], printer: [700, 540], router: [860, 660], switch: [860, 660], hub: [680, 520], ap: [720, 560], wrouter: [780, 600] };
+  const SIZES = { smartphone: [760, 600], ipphone: [780, 600], iot: [720, 560], mcu: [900, 680], sbc: [900, 680], iotcomp: [640, 500], cloud: [720, 560], homegw: [780, 600], btspeaker: [640, 500], btheadset: [640, 500], pc: [760, 600], laptop: [760, 600], tablet: [760, 600], server: [800, 640], printer: [700, 540], router: [860, 660], switch: [860, 660], hub: [680, 520], ap: [720, 560], wrouter: [780, 600] };
 
   /** Какую вкладку открыть по умолчанию (двойной щелчок): как в Packet Tracer — «Настройка»/«Рабочий стол»/CLI. */
   function defaultTab(dev) {
     if (dev.type === 'router' || dev.type === 'switch') return 'cli';
-    if (dev.type === 'pc' || dev.type === 'laptop' || dev.type === 'tablet' || dev.type === 'server') return 'desktop';
+    if (dev.type === 'pc' || dev.type === 'laptop' || dev.type === 'tablet' || dev.type === 'server' || dev.type === 'smartphone') return 'desktop';
+    const own = { ipphone: 'phone', iot: 'thing', mcu: 'program', sbc: 'program', iotcomp: 'comp' }[dev.type];
+    if (own) return own;
     return 'config';
   }
 

@@ -135,7 +135,9 @@
     rows.push(h('div', { class: 'full' }, e), h('div', { class: 'full' }, status));
     box.appendChild(DW.form(...rows));
     if (p.media === 'wireless') wifiClientForm(app, dev, box);
+    const v6live = DW.hostIpv6Form ? DW.hostIpv6Form(app, dev, box) : null;
     return () => {
+      if (v6live) v6live();
       const d = app.net.getDevice(dev.id);
       if (!d) return;
       status.style.display = d.iface.dhcp || d.conflict ? '' : 'none';
@@ -168,11 +170,13 @@
   function hostConfig(app, id, st) {
     return (body) => {
       const dev = app.net.getDevice(id);
-      const items = [{ group: 'GLOBAL' }, { id: 'global', label: 'Настройки' }, { group: 'INTERFACE' }, { id: 'if', label: dev.iface.name }];
+      const extra = (DW.hostPages || []).filter((x) => x.applies(dev));
+      const items = [{ group: 'GLOBAL' }, { id: 'global', label: 'Настройки' }].concat(extra.length ? [{ group: 'УСТРОЙСТВО' }] : [], extra.map((x) => ({ id: 'x:' + x.id, label: x.label })), [{ group: 'INTERFACE' }, { id: 'if', label: dev.iface.name }]);
       let live = null;
       DW.sidebarLayout(body, items, st, 'sec', (sec, box) => {
         const d = app.net.getDevice(id);
-        live = sec === 'global' ? hostGlobal(app, d, box) : hostIface(app, d, box);
+        const pg = extra.find((x) => 'x:' + x.id === sec);
+        live = pg ? pg.render(app, d, box) || null : sec === 'global' ? hostGlobal(app, d, box) : hostIface(app, d, box);
       });
       return () => { if (live) live(); };
     };
@@ -261,7 +265,7 @@
     const e = err();
     const ifn = f.name;
     const run = (cmds) => DW.iosApply(app, app.net.getDevice(dev.id), [DW.ifCmd(ifn)].concat(cmds), e);
-    box.appendChild(DW.section(f.name + (f.kind === 'sub' ? ' (подынтерфейс)' : f.kind === 'loop' ? ' (loopback)' : '')));
+    box.appendChild(DW.section(f.name + ({ sub: ' (подынтерфейс)', loop: ' (loopback)', tunnel: ' (GRE-туннель)', vtemplate: ' (шаблон PPPoE)', vpg: ' (для приложений IOx)' }[f.kind] || '')));
     const rows = [];
     if (f.kind === 'phys') rows.push(...portPhysRows(app, dev, f.port, ifn));
     else rows.push(lbl('Состояние'), UI.toggle(f.adminUp ? 'Включён' : 'Выключен', f.adminUp, (on) => run([on ? 'no shutdown' : 'shutdown'])));
@@ -292,7 +296,7 @@
       rows.push(lbl('Clock rate'), h('div', null, cr, h('div', { class: 'muted', style: { fontSize: '12px' } }, !p.link ? 'кабель не подключён' : dce ? 'этот конец кабеля — DCE: clock rate обязателен' : 'этот конец — DTE: clock rate задаётся на другой стороне')));
       rows.push(lbl('Инкапсуляция'), DW.select([['hdlc', 'HDLC'], ['ppp', 'PPP']], p.encap || 'hdlc', (v) => run(['encapsulation ' + v])));
     }
-    if (f.kind !== 'loop') {
+    if (f.kind !== 'loop' && f.kind !== 'tunnel' && f.kind !== 'vtemplate' && f.kind !== 'vpg') {
       const helper = DW.ipInput(ipT(f.helper), 'нет');
       DW.commitOnChange(helper, () => {
         const r = DW.readIp(helper, false);
@@ -306,9 +310,10 @@
       rows.push(lbl('ACL входящий'), DW.select(acls, f.aclIn || '', (v) => run([v ? 'ip access-group ' + v + ' in' : 'no ip access-group ' + (f.aclIn || '1') + ' in'])));
       rows.push(lbl('ACL исходящий'), DW.select(acls, f.aclOut || '', (v) => run([v ? 'ip access-group ' + v + ' out' : 'no ip access-group ' + (f.aclOut || '1') + ' out'])));
     }
+    if (DW.routerIfaceExtra) rows.push(...DW.routerIfaceExtra(app, dev, f, run, e));
     rows.push(h('div', { class: 'full' }, e));
     box.appendChild(DW.form(...rows));
-    if (f.kind === 'sub' || f.kind === 'loop') {
+    if (f.kind === 'sub' || f.kind === 'loop' || f.kind === 'tunnel' || f.kind === 'vtemplate' || f.kind === 'vpg') {
       box.appendChild(h('div', { style: { marginTop: '10px' } }, h('button', { class: 'btn outline small danger', onClick: () => DW.iosApply(app, app.net.getDevice(dev.id), ['no interface ' + ifn], e) }, UI.icon('delete'), 'Удалить интерфейс')));
     }
     if (f.kind === 'phys' && dev.ports[f.port].media !== 'serial') {
@@ -415,8 +420,8 @@
     return (body) => {
       const dev = app.net.getDevice(id);
       const items = [{ group: 'GLOBAL' }, { id: 'global', label: 'Настройки' }, { group: 'ROUTING' }, { id: 'static', label: 'Статические' }, { id: 'rip', label: 'RIP' }, { id: 'ospf', label: 'OSPF' },
-        { group: 'СЛУЖБЫ' }, { id: 'dhcp', label: 'DHCP' }, { group: 'INTERFACE' }];
-      for (const f of dev.ifaces) items.push({ id: 'if:' + f.name, label: UI.shortIf(f.name) === f.name ? f.name : f.name, title: f.name });
+        { group: 'СЛУЖБЫ' }, { id: 'dhcp', label: 'DHCP' }].concat((DW.routerPages || []).map((x) => ({ id: 'x:' + x.id, label: x.label }))).concat([{ group: 'INTERFACE' }]);
+      for (const f of dev.ifaces) if (!f.runtime) items.push({ id: 'if:' + f.name, label: UI.shortIf(f.name) === f.name ? f.name : f.name, title: f.name });
       items.push({ id: 'addif', label: '+ Loopback' });
       let live = null;
       DW.sidebarLayout(body, items, st, 'sec', (sec, box) => {
@@ -427,6 +432,7 @@
         else if (sec === 'rip') ripSection(app, d, box);
         else if (sec === 'ospf') ospfSection(app, d, box);
         else if (sec === 'dhcp') live = DW.dhcpSection(app, id, box, true);
+        else if (sec.startsWith('x:')) { const pg = DW.routerPages.find((x) => 'x:' + x.id === sec); if (pg) live = pg.render(app, d, box) || null; }
         else if (sec === 'addif') {
           const n = h('input', { class: 'inp', type: 'number', min: 0, value: d.ifaces.filter((f) => f.kind === 'loop').length, style: { width: '100px' } });
           const e = err();
@@ -653,16 +659,21 @@
 
   function wrouterConfig(app, id, st) {
     return (body) => {
-      const items = [{ group: 'GLOBAL' }, { id: 'global', label: 'Настройки' }, { id: 'status', label: 'Состояние' }, { group: 'НАСТРОЙКА' }, { id: 'inet', label: 'Интернет (WAN)' }, { id: 'lan', label: 'Локальная сеть' }, { id: 'wifi', label: 'Wi-Fi' }];
+      const dev0 = app.net.getDevice(id);
+      const extra = (DW.hostPages || []).filter((x) => x.applies(dev0));
+      const items = [{ group: 'GLOBAL' }, { id: 'global', label: 'Настройки' }, { id: 'status', label: 'Состояние' }, { group: 'НАСТРОЙКА' }, { id: 'inet', label: 'Интернет (WAN)' }, { id: 'lan', label: 'Локальная сеть' }, { id: 'wifi', label: 'Wi-Fi' }]
+        .concat(extra.map((x) => ({ id: 'x:' + x.id, label: x.label })));
       let live = null;
       DW.sidebarLayout(body, items, st, 'sec', (sec, box) => {
         const d = app.net.getDevice(id);
         live = null;
         const e = err();
+        const pg = extra.find((x) => 'x:' + x.id === sec);
+        if (pg) { live = pg.render(app, d, box) || null; return; }
         if (sec === 'global') {
           box.appendChild(DW.section('Глобальные настройки'));
           box.appendChild(DW.form(...displayName(app, d)));
-          box.appendChild(h('div', { class: 'hint-box', style: { marginTop: '10px' } }, 'Домашний маршрутизатор: порт Internet подключается к провайдеру, Ethernet 1–4 и Wi-Fi — локальная сеть 192.168.0.0/24 с DHCP и NAT. Настройки сохраняются сразу (без NVRAM).'));
+          box.appendChild(h('div', { class: 'hint-box', style: { marginTop: '10px' } }, (d.type === 'homegw' ? 'Домашний шлюз IoT: умные устройства регистрируются на встроенном IoT-сервере (раздел «IoT-сервер», вход admin/admin). ' : 'Домашний маршрутизатор: ') + 'порт Internet подключается к провайдеру, Ethernet 1–4 и Wi-Fi — локальная сеть ' + U.cidr(U.net(d.lanIface.ip, d.lanIface.mask), d.lanIface.mask) + ' с DHCP и NAT. Настройки сохраняются сразу (без NVRAM).'));
         } else if (sec === 'status') {
           const w = d.wanIface;
           const lan = d.lanIface;
@@ -733,6 +744,9 @@
 
   /* ================= вкладка ================= */
 
+  DW.configBuilders = DW.configBuilders || {};
+  DW.cfg = { hostConfig, wrouterConfig, displayName, portPhysRows, hostIface, hostGlobal, wifiClientForm };
+
   DW.configTab = function (app, id) {
     const st = {};
     const tab = {
@@ -742,11 +756,12 @@
       render(body) {
         const dev = app.net.getDevice(id);
         let builder;
-        if (dev.type === 'router') builder = routerConfig(app, id, st);
+        if (DW.configBuilders[dev.type]) builder = DW.configBuilders[dev.type](app, id, st);
+        else if (dev.type === 'router') builder = routerConfig(app, id, st);
         else if (dev.type === 'switch') builder = switchConfig(app, id, st);
         else if (dev.type === 'hub') builder = hubConfig(app, id, st);
         else if (dev.type === 'ap') builder = apConfig(app, id, st);
-        else if (dev.type === 'wrouter') builder = wrouterConfig(app, id, st);
+        else if (dev.type === 'wrouter' || dev.type === 'homegw') builder = wrouterConfig(app, id, st);
         else builder = hostConfig(app, id, st);
         tab.live = builder(body) || null;
       },

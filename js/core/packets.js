@@ -61,8 +61,53 @@
 
   const TCP_APPS = { 80: 'HTTP', 25: 'SMTP', 110: 'POP3', 23: 'TELNET', 22: 'SSH' };
 
+  /* ---------- расширения: новые протоколы описывают себя сами ---------- */
+
+  const EXT = [];
+  /**
+   * h: { protocols: {KEY: {label, color}}, classify(f) → KEY|null, summary(f) → строка|null,
+   *      layers(f) → полный список уровней|null (свои типы кадров), extraLayers(f, out) — дополнить уровни IPv4 }
+   */
+  P.register = function (h) {
+    EXT.push(h);
+    if (h.protocols) Object.assign(P.PROTOCOLS, h.protocols);
+    if (h.ethertypes) Object.assign(P.ETHERTYPES, h.ethertypes);
+  };
+
+  P.ETHERTYPES = { ARP: '0x0806 ARP', IPv4: '0x0800 IPv4' };
+
+  /** Заголовок 2-го уровня (Ethernet или последовательный канал) — для описаний новых протоколов. */
+  P.l2Layer = function (f) {
+    if (f.encap) return { title: f.encap + ' (уровень 2, канал «точка-точка»)', fields: [['Инкапсуляция', f.encap], ['Протокол', f.type]] };
+    return {
+      title: 'Ethernet II (уровень 2)',
+      fields: [['MAC отправителя', f.src], ['MAC получателя', f.dst + (U.isBroadcastMac(f.dst) ? ' (широковещательный)' : U.isMulticastMac(f.dst) ? ' (групповой)' : '')], ['Тип', P.ETHERTYPES[f.type] || f.type]],
+    };
+  };
+
+  /** Приблизительный размер кадра в байтах (для счётчиков интерфейсов, SNMP и NetFlow). */
+  P.sizeOf = function (f) {
+    if (!f) return 64;
+    let n = 18;
+    const p = f.payload || {};
+    if (f.type === 'ARP') return 64;
+    if (f.type === 'IPv4' || f.type === 'IPv6') {
+      n += f.type === 'IPv6' ? 40 : 20;
+      const l4 = p.payload || {};
+      if (p.proto === 'ICMP' || p.next === 'ICMPv6') n += 8 + (l4.size || 32);
+      else if (p.proto === 'UDP' || p.next === 'UDP') n += 8 + Math.min(1400, JSON.stringify(l4.data || '').length);
+      else if (p.proto === 'TCP' || p.next === 'TCP') n += 20 + Math.min(1400, l4.data == null ? 0 : JSON.stringify(l4.data).length);
+      else n += 40;
+    } else n += 46;
+    return Math.max(64, n);
+  };
+
   P.classify = function (f) {
     if (!f) return 'OTHER';
+    for (const h of EXT) {
+      const k = h.classify && h.classify(f);
+      if (k) return k;
+    }
     if (f.type === 'ARP') return 'ARP';
     if (f.type === 'IPv4' && f.payload) {
       const p = f.payload;
@@ -110,6 +155,10 @@
   P.summary = function (f) {
     const ip = U.ipStr;
     if (!f) return '';
+    for (const h of EXT) {
+      const t = h.summary && h.summary(f);
+      if (t) return t;
+    }
     if (f.type === 'ARP') {
       const a = f.payload;
       if (a.op === 'request') {
@@ -155,15 +204,25 @@
 
   /** Уровни PDU для окна инспектора: [{title, fields: [[k, v], ...]}]. */
   P.layers = function (f) {
+    if (!f) return [];
+    for (const h of EXT) {
+      const r = h.layers && h.layers(f);
+      if (r) return r;
+    }
+    const out = baseLayers(f);
+    for (const h of EXT) if (h.extraLayers) h.extraLayers(f, out);
+    return out;
+  };
+
+  function baseLayers(f) {
     const ip = U.ipStr;
     const out = [];
-    if (!f) return out;
     if (f.encap) {
       out.push({ title: f.encap + ' (уровень 2, последовательный канал)', fields: [['Инкапсуляция', f.encap], ['Протокол', f.type]] });
     } else {
       out.push({
         title: 'Ethernet II (уровень 2)',
-        fields: [['MAC отправителя', f.src], ['MAC получателя', f.dst + (U.isBroadcastMac(f.dst) ? ' (широковещательный)' : '')], ['Тип', f.type === 'ARP' ? '0x0806 ARP' : '0x0800 IPv4']],
+        fields: [['MAC отправителя', f.src], ['MAC получателя', f.dst + (U.isBroadcastMac(f.dst) ? ' (широковещательный)' : '')], ['Тип', P.ETHERTYPES[f.type] || f.type]],
       });
     }
     if (f.vlan != null) out.push({ title: '802.1Q (тег VLAN)', fields: [['VLAN ID', String(f.vlan)]] });
@@ -231,7 +290,7 @@
       }
     }
     return out;
-  };
+  }
 
   NS.packets = P;
 })(globalThis.NetLab = globalThis.NetLab || {});

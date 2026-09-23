@@ -294,6 +294,7 @@
       if (opts.undoable) this.pdu.clear();
       if (!opts.keepView) {
         // другая схема: номера устройств могут совпасть, а состояние программ — чужое
+        if (UI.stopAllPrograms) UI.stopAllPrograms();
         this.terminals.clear();
         this.deskStates.clear();
         this.iosLogs.clear();
@@ -731,9 +732,10 @@
         b.addEventListener('click', () => {
           const r = b.getBoundingClientRect();
           UI.menu(r.right + 6, r.top, [{ title: c.label + ' — щёлкните или перетащите на схему' }].concat(c.models.map((m) => {
+            if (typeof m === 'object') return m;
             const spec = NS.models.get(m);
             return {
-              label: m, right: spec.title.replace(m, '').replace('Cisco', '').trim(), icon: UI.deviceSvg(spec.type, 'mi', m), on: this.tool === 'place:' + m,
+              label: m, right: spec.title.replace(m, '').replace('Cisco', '').replace(/\(\s*\)/g, '').trim(), icon: UI.deviceSvg(spec.type, 'mi', m), on: this.tool === 'place:' + m,
               drag: { type: 'application/x-netlab-device', data: m },
               onClick: () => this.setTool('place:' + m),
             };
@@ -1022,6 +1024,14 @@
           h('li', null, 'Как в IOS: конфигурация пропадает после выключения или reload, если не сохранить её (copy running-config startup-config или кнопка «Сохранить» в NVRAM).'),
           h('li', null, 'Инспектор ', k('I'), ' показывает таблицы ARP, MAC, маршрутизации, NAT, DHCP, CDP.'),
           h('li', null, '«Симуляция» (вверху справа) — пакеты движутся по шагам, каждое решение устройства объяснено.')),
+        h('b', null, 'IPv6, VPN, телефония, IoT'),
+        h('ul', null,
+          h('li', null, 'IPv6: поля в IP Configuration и в настройках интерфейсов, ipv6 unicast-routing, SLAAC. SNMP — программа MIB Browser, NetFlow — NetFlow Collector.'),
+          h('li', null, 'VPN (GRE, IPsec, Easy VPN), PPPoE Dialer и Dial-up (модем + облако Cloud-PT в категории WAN) — программы на рабочем столе.'),
+          h('li', null, 'IP-телефон 7960: вкладка «Телефон», питание — адаптер (Физический вид) или PoE 3560-24PS. АТС — Cisco CME на маршрутизаторе (Настройка → Телефония). IP Communicator — на рабочем столе ПК.'),
+          h('li', null, 'Bluetooth: программа на смартфоне, ноутбуке или планшете; устройства должны быть рядом на схеме.'),
+          h('li', null, 'IoT: умные устройства и платы — категория IoT слева. IoT Monitor управляет устройствами, вкладка «Программирование» платы запускает код, IoX IDE загружает приложения на маршрутизатор.'),
+          h('li', null, 'Готовые примеры по каждой теме — кнопка «Примеры».')),
         h('b', null, 'Клавиши'),
         h('ul', null,
           h('li', null, k('V'), ' выбор, ', k('C'), ' кабель, ', k('P'), ' ping, ', k('M'), ' сообщение, ', k('I'), ' инспектор, ', k('N'), ' заметка, ', k('G'), ' фигура, ', k('X'), ' удаление'),

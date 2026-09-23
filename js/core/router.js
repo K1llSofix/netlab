@@ -40,8 +40,11 @@
     /** Порядок интерфейсов как в IOS: loopback, затем физические, за каждым — его подынтерфейсы. */
     sortIfaces() {
       const num = (f) => Number((/(\d+)$/.exec(f.name) || [0, 0])[1]);
+      const virt = (f) => f.port < 0 && f.kind !== 'loop';
       this.ifaces.sort((a, b) => {
         if (a.kind === 'loop' || b.kind === 'loop') return a.kind === b.kind ? num(a) - num(b) : a.kind === 'loop' ? -1 : 1;
+        // туннели и шаблоны — после физических интерфейсов, по имени
+        if (virt(a) || virt(b)) return virt(a) && virt(b) ? (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) : virt(a) ? 1 : -1;
         if (a.port !== b.port) return a.port - b.port;
         if (a.kind !== b.kind) return a.kind === 'phys' ? -1 : 1;
         return num(a) - num(b);
@@ -116,7 +119,8 @@
     }
 
     removeIface(f) {
-      if (f.kind !== 'sub' && f.kind !== 'loop') throw new Error('Физический интерфейс удалить нельзя');
+      const ext = NS.IpNode.ifaceKinds[f.kind];
+      if (f.kind !== 'sub' && f.kind !== 'loop' && !(ext && ext.removable)) throw new Error('Физический интерфейс удалить нельзя');
       this.flushIface(f, 'down');
       this.ifaces = this.ifaces.filter((x) => x !== f);
       this.net.markRouting();
@@ -246,6 +250,9 @@
         } else if (kind === 'loop') {
           if (this.ifaceByName(s.name)) continue;
           f = this.addIface(-1, String(s.name), null, 'loop');
+        } else if (NS.IpNode.ifaceKinds[kind]) {
+          if (this.ifaceByName(s.name)) continue;
+          f = NS.IpNode.ifaceKinds[kind].create(this, s);
         }
         if (!f) continue;
         this.loadIface(f, s);

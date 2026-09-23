@@ -28,9 +28,31 @@
   }
   const ip = (v) => (v == null ? '' : U.ipStr(v));
 
+  /* ================= расширения (IPv6, SNMP, NetFlow, VPN, PPPoE, VoIP, IoX…) ================= */
+
+  /**
+   * Новые подсистемы регистрируют здесь свои команды, режимы, show и строки running-config.
+   * Обработчик возвращает true, если команда его.
+   */
+  const EXT = {
+    config: [],   // (dev, s, a, neg, io, CTX) — глобальный режим
+    iface: [],    // (dev, s, a, neg, io, targets, CTX) — режим интерфейса
+    show: [],     // (dev, s, a, io, CTX) — show …
+    exec: [],     // (dev, s, t, io, line, CTX) → {handled, job} | null — user/privileged
+    global: [],   // (t, s) → true, если команда глобальная (из подрежима выйти в config)
+    modes: {},    // имя → { prompt(dev, s) → '(config-xxx)#', run(dev, s, t, io, CTX), tree: [...] }
+    ifNames: [],  // (dev, str) → { kind: 'named', name, create(dev), remove(dev) } | null
+    running: { global: [], iface: [], tail: [] }, // (dev[, f, port]) → строки
+    tree: {},     // режим → дополнительные строки для «?»
+  };
+
   /** Имя интерфейса: g0/0, gi0/0.10, fa0/1, s0/0/0, vlan 10, lo0, "gig 0/1". */
   function parseIfName(dev, str) {
     const t = String(str).trim().replace(/\s+/g, '');
+    for (const fn of EXT.ifNames) {
+      const r = fn(dev, t);
+      if (r) return r;
+    }
     let m = /^vl(?:a(?:n)?)?(\d+)$/i.exec(t);
     if (m) return { kind: 'vlan', vlan: Number(m[1]) };
     m = /^lo(?:o(?:p(?:b(?:a(?:c(?:k)?)?)?)?)?)?(\d+)$/i.exec(t);
@@ -118,6 +140,7 @@
         L.push('ip dhcp pool ' + p.name, ' network ' + ip(p.network) + ' ' + ip(p.mask));
         if (p.gateway != null) L.push(' default-router ' + ip(p.gateway));
         if (p.dns != null) L.push(' dns-server ' + ip(p.dns));
+        if (p.tftp != null) L.push(' option 150 ip ' + ip(p.tftp));
         L.push('!');
       }
       if (!dev.dhcpd.enabled) L.push('no service dhcp', '!');
@@ -128,6 +151,7 @@
     for (const u of io.users) L.push('username ' + u.name + (u.priv > 1 ? ' privilege ' + u.priv : '') + (u.secret ? ' secret 5 ' + u.pass : ' password ' + pwLine(dev, u.pass)));
     if (io.users.length || io.domain) L.push('!');
     if (!io.cdp) L.push('no cdp run', '!');
+    for (const fn of EXT.running.global) L.push(...fn(dev));
     if (dev.type === 'switch') {
       if (dev.stpPriority !== 32768) L.push('spanning-tree vlan 1 priority ' + dev.stpPriority);
       L.push('spanning-tree mode pvst', '!');
@@ -138,8 +162,10 @@
     }
     if (dev.type === 'router') {
       for (const f of dev.ifaces) {
+        if (f.runtime) continue;
         L.push('interface ' + f.name);
         L.push(...ifaceLines(dev, f));
+        for (const fn of EXT.running.iface) L.push(...fn(dev, f, f.kind === 'phys' ? dev.ports[f.port] : null));
         if (f.kind === 'phys') L.push(...portLines(dev, dev.ports[f.port]));
         if (!f.adminUp) L.push(' shutdown');
         L.push('!');
@@ -149,16 +175,16 @@
         if (!NS.Network.isData(p)) return;
         L.push('interface ' + p.name);
         L.push(...switchPortLines(dev, p));
-        if (p.routed) {
-          const f = dev.ifaces.find((x) => x.kind === 'routed' && x.port === i);
-          if (f) L.push(...ifaceLines(dev, f));
-        }
+        const rf = p.routed ? dev.ifaces.find((x) => x.kind === 'routed' && x.port === i) : null;
+        if (rf) L.push(...ifaceLines(dev, rf));
+        for (const fn of EXT.running.iface) L.push(...fn(dev, rf, p));
         L.push(...portLines(dev, p));
         if (!p.adminUp) L.push(' shutdown');
         L.push('!');
       });
       for (const f of dev.ifaces.filter((x) => x.kind === 'svi').sort((a, b) => a.vlan - b.vlan)) {
         L.push('interface ' + f.name, ...ifaceLines(dev, f));
+        for (const fn of EXT.running.iface) L.push(...fn(dev, f, null));
         if (!f.adminUp) L.push(' shutdown');
         L.push('!');
       }
@@ -190,6 +216,7 @@
     L.push('!');
     for (const a of dev.acls.values()) L.push(...a.configLines());
     if (dev.acls.size) L.push('!');
+    for (const fn of EXT.running.tail) L.push(...fn(dev));
     if (io.rsa) L.push('ip ssh version ' + io.sshVer, '!');
     if (io.banner) L.push('banner motd ^C' + io.banner + '^C', '!');
     L.push('line con 0');
@@ -237,7 +264,7 @@
       case 'pool': return n + '(dhcp-config)#';
       case 'vlan': return n + '(config-vlan)#';
       case 'acl': return n + (s.acl && s.acl.type === 'standard' ? '(config-std-nacl)#' : '(config-ext-nacl)#');
-      default: return n + '#';
+      default: return n + (EXT.modes[s.mode] ? EXT.modes[s.mode].prompt(dev, s) : '#');
     }
   }
 
@@ -685,6 +712,7 @@
     const isR = dev.type === 'router';
     if (!a.length) { incomplete(io); return; }
     const w = a[0];
+    for (const fn of EXT.show) if (fn(dev, s, a, io, CTX)) return;
     if (kw(w, 'running-config', 3)) {
       const L = runningConfig(dev);
       io.out('Building configuration...');
@@ -863,6 +891,10 @@
   /* ================= выполнение команд ================= */
 
   function execCommon(dev, s, t, io, line) {
+    for (const fn of EXT.exec) {
+      const r = fn(dev, s, t, io, line, CTX);
+      if (r) return r;
+    }
     // команды, доступные и в user, и в privileged
     if (kw(t[0], 'enable', 2)) { if (s.mode === 'user') doEnable(dev, s, io); return { handled: true }; }
     if (kw(t[0], 'disable', 4)) { s.mode = 'user'; return { handled: true }; }
@@ -1127,7 +1159,7 @@
 
   /** Выполнить строки конфигурации (как при copy tftp running-config). Возвращает число байт. */
   /** Информационное сообщение IOS (%LINK-…, % Generating …), а не ошибка команды. */
-  function isInfo(l) { return /^%[A-Z]+-\d|^% (Generating|Access VLAN does not exist|Login disabled)/.test(String(l)); }
+  function isInfo(l) { return /^%[A-Z]+-\d|^% (Generating|Access VLAN does not exist|Voice VLAN does not exist|Login disabled|NOTE:)/.test(String(l)); }
 
   function replayConfig(dev, lines, io, quiet) {
     const s = createSession(dev, { via: 'local' });
@@ -1158,6 +1190,7 @@
   /* ---------- config ---------- */
 
   function ifaceOf(dev, r) {
+    if (r.kind === 'named') return dev.ifaceByName(r.name);
     if (r.kind === 'vlan') return dev.ifaces.find((f) => f.kind === 'svi' && f.vlan === r.vlan) || null;
     if (r.kind === 'loop') return dev.ifaceByName('Loopback' + r.n);
     if (r.sub != null) return dev.ifaceByName(dev.ports[r.port].name + '.' + r.sub);
@@ -1169,6 +1202,7 @@
     const neg = kw(t[0], 'no', 2);
     const a = neg ? t.slice(1) : t;
     const w = a[0];
+    for (const fn of EXT.config) if (fn(dev, s, a, neg, io, CTX)) return;
 
     if (kw(w, 'hostname', 3) && !neg) {
       if (!a[1]) { incomplete(io); return; }
@@ -1201,13 +1235,16 @@
       const r = parseIfName(dev, name);
       if (!r) { io.out('% Invalid interface: ' + name); return; }
       if (neg) {
+        if (r.kind === 'named') { withMutate(io, () => r.remove(dev)); return; }
         if (r.kind === 'vlan' && !isR) { withMutate(io, () => dev.removeSvi(r.vlan)); return; }
         const f = ifaceOf(dev, r);
         if (!f || (f.kind !== 'sub' && f.kind !== 'loop')) { io.out('% Удалить можно только подынтерфейс, loopback или interface vlan.'); return; }
         withMutate(io, () => dev.removeIface(f));
         return;
       }
-      if (r.kind === 'vlan') {
+      if (r.kind === 'named') {
+        if (!dev.ifaceByName(r.name) && !withMutate(io, () => r.create(dev))) return;
+      } else if (r.kind === 'vlan') {
         if (isR) { io.out('% Интерфейсы VLAN есть только у коммутатора. На маршрутизаторе используйте подынтерфейсы (interface g0/0.10).'); return; }
         if (!withMutate(io, () => dev.addSvi(r.vlan))) return;
       } else if (r.kind === 'loop') {
@@ -1519,6 +1556,7 @@
     const targets = s.ifs;
     const each = (fn) => withMutate(io, () => { for (const r of targets) fn(r, ifaceOf(dev, r)); });
     const l3 = (r) => r.kind !== 'port' || r.sub != null || isR || dev.ports[r.port].routed;
+    for (const fn of EXT.iface) if (fn(dev, s, a, neg, io, targets, CTX)) return;
 
     if (kw(w, 'shutdown', 2)) {
       each((r, f) => {
@@ -1834,7 +1872,7 @@
       withMutate(io, () => {
         dev.dhcpd.setPool({
           name: p.name, start: U.net(net, mask) + 1, end: U.bcast(net, mask) - 1, mask,
-          gateway: old ? old.gateway : p.gateway, dns: old ? old.dns : p.dns,
+          gateway: old ? old.gateway : p.gateway, dns: old ? old.dns : p.dns, tftp: old ? old.tftp : p.tftp || null,
         }, old ? p.name : undefined);
         p.committed = true;
       });
@@ -1847,6 +1885,16 @@
       const old = cur();
       if (!old) { if (isGw) p.gateway = v; else p.dns = v; return; }
       withMutate(io, () => dev.dhcpd.setPool(Object.assign({}, old, isGw ? { gateway: v } : { dns: v }), p.name));
+      return;
+    }
+    if (kw(t[0], 'option', 1)) {
+      // option 150 ip A.B.C.D — адрес TFTP-сервера (CME) для IP-телефонов
+      if (t[1] !== '150') { if (/^\d+$/.test(t[1] || '')) return; invalid(io, t[1]); return; }
+      const v = U.parseIp(t[kw(t[2], 'ip', 1) ? 3 : 2] || '');
+      if (v == null) { incomplete(io); return; }
+      const old = cur();
+      if (!old) { p.tftp = v; return; }
+      withMutate(io, () => dev.dhcpd.setPool(Object.assign({}, old, { tftp: v }), p.name));
       return;
     }
     if (kw(t[0], 'lease', 2) || kw(t[0], 'domain-name', 2)) return;
@@ -1870,8 +1918,9 @@
   function execConfigLine(dev, s, line, io) {
     const t = tokenize(line);
     if (!t.length) return null;
-    if (kw(t[0], 'end', 2)) { s.mode = 'exec'; s.ifs = null; s.pool = null; s.acl = null; return null; }
+    if (kw(t[0], 'end', 2)) { s.mode = 'exec'; s.ifs = null; s.pool = null; s.acl = null; s.ctx = null; return null; }
     if (kw(t[0], 'exit', 3)) {
+      s.ctx = null;
       if (s.mode === 'config') s.mode = 'exec';
       else {
         if (s.mode === 'pool' && s.pool && !s.pool.committed) io.out('% Пул «' + s.pool.name + '» не создан: не задана команда network.');
@@ -1892,8 +1941,8 @@
     // Команды глобального режима работают и из подрежимов (как в IOS).
     const g = t[0];
     const globalCmd = kw(g, 'interface', 3) || kw(g, 'hostname', 3) || kw(g, 'router', 3) || kw(g, 'line', 2) || kw(g, 'access-list', 3) ||
-      kw(g, 'username', 3) || kw(g, 'enable', 2) || kw(g, 'banner', 3) || kw(g, 'service', 3) || kw(g, 'crypto', 2) ||
-      (dev.type === 'switch' && kw(g, 'vlan', 1) && s.mode !== 'if') ||
+      kw(g, 'username', 3) || kw(g, 'enable', 2) || kw(g, 'banner', 3) || kw(g, 'service', 3) || (kw(g, 'crypto', 2) && !(s.mode === 'if' && kw(t[1], 'map', 1))) ||
+      (dev.type === 'switch' && kw(g, 'vlan', 1) && s.mode !== 'if') || EXT.global.some((fn) => fn(t, s)) ||
       (kw(g, 'ip', 2) && (kw(t[1], 'route', 1) || kw(t[1], 'routing', 3) || kw(t[1], 'access-list', 3) || kw(t[1], 'domain-name', 8) || (kw(t[1], 'nat', 1) && kw(t[2], 'inside', 1) && kw(t[3], 'source', 1)) || kw(t[1], 'nat', 1) && kw(t[2], 'pool', 1) || (kw(t[1], 'dhcp', 1) && s.mode !== 'if')));
     if (s.mode !== 'config' && globalCmd && !(s.mode === 'acl' && (kw(g, 'permit', 1) || kw(g, 'deny', 1)))) {
       if (s.mode === 'pool' && s.pool && !s.pool.committed) io.out('% Пул «' + s.pool.name + '» не создан: не задана команда network.');
@@ -1901,6 +1950,7 @@
       s.ifs = null;
       s.pool = null;
       s.acl = null;
+      s.ctx = null;
     }
     switch (s.mode) {
       case 'config': iosConfig(dev, s, t, io); break;
@@ -1913,7 +1963,9 @@
         else invalid(io, t[0]);
         break;
       case 'acl': iosAcl(dev, s, t, io); break;
-      default: break;
+      default:
+        if (EXT.modes[s.mode]) EXT.modes[s.mode].run(dev, s, t, io, CTX);
+        break;
     }
     return null;
   }
@@ -1939,14 +1991,16 @@
     line: ['password WORD', 'login', 'login local', 'transport input ssh', 'transport input telnet', 'transport input all', 'transport input none', 'access-class WORD in', 'exec-timeout WORD', 'logging synchronous', 'exit', 'end'],
     rip: ['network A.B.C.D', 'version 2', 'no auto-summary', 'passive-interface WORD', 'default-information originate', 'exit', 'end'],
     ospf: ['network A.B.C.D A.B.C.D area WORD', 'router-id A.B.C.D', 'passive-interface WORD', 'default-information originate', 'default-information originate always', 'exit', 'end'],
-    pool: ['network A.B.C.D A.B.C.D', 'default-router A.B.C.D', 'dns-server A.B.C.D', 'exit', 'end'],
+    pool: ['network A.B.C.D A.B.C.D', 'default-router A.B.C.D', 'dns-server A.B.C.D', 'option 150 ip A.B.C.D', 'exit', 'end'],
     vlan: ['name WORD', 'exit', 'end'],
     acl: ['permit LINE', 'deny LINE', 'remark LINE', 'exit', 'end'],
   };
 
   function syntaxFor(s) {
-    if (s.mode === 'exec') return TREE.user.concat(TREE.exec);
-    return TREE[s.mode] || TREE.user;
+    if (s.mode === 'exec') return TREE.user.concat(TREE.exec, EXT.tree.user || [], EXT.tree.exec || []);
+    if (s.mode === 'user') return TREE.user.concat(EXT.tree.user || []);
+    if (EXT.modes[s.mode]) return (EXT.modes[s.mode].tree || []).concat(['exit', 'end']);
+    return (TREE[s.mode] || TREE.user).concat(EXT.tree[s.mode] || []);
   }
 
   /** Варианты для позиции после набранных слов. */
@@ -2087,6 +2141,12 @@
     };
   }
 
-  NS.cliIos = { createSession, prompt, exec, complete, help, runningConfig, parseIfName, replayConfig, startRemote, remoteLine, isInfo };
+  /** Помощники для модулей-расширений. */
+  const CTX = {
+    kw, tokenize, pad, padL, shortIf, ip, invalid, incomplete, withMutate, parseIfName, ifaceOf,
+    askPassword, iosPing: (dev, args, io) => iosPing(dev, args, io), iosTraceroute: (dev, args, io) => iosTraceroute(dev, args, io),
+  };
+
+  NS.cliIos = { createSession, prompt, exec, complete, help, runningConfig, parseIfName, replayConfig, startRemote, remoteLine, isInfo, ext: EXT, ctx: CTX };
   NS.ios = { runningConfig };
 })(globalThis.NetLab = globalThis.NetLab || {});

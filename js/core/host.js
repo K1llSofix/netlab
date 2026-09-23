@@ -48,7 +48,8 @@
 
     syncIfaces() {
       if (!this.ifaces) return;
-      const idx = this.ports.findIndex((p) => NS.Network.isData(p));
+      // IoT-пины (D0…, A0…) у одноплатного компьютера — не сетевая карта
+      const idx = this.ports.findIndex((p) => NS.Network.isData(p) && p.media !== 'iot');
       if (!this.ifaces.length) this.addIface(idx, idx >= 0 ? this.ports[idx].name : 'нет сетевой карты');
       const f = this.ifaces[0];
       f.port = idx;
@@ -429,6 +430,7 @@
   }
 
   NS.Host = Host;
+  NS.hostClass = hostClass;
   hostClass('pc', 'PC', 'Компьютер');
   hostClass('laptop', 'Laptop', 'Ноутбук');
   hostClass('server', 'Server', 'Сервер');

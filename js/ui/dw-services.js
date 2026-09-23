@@ -61,6 +61,7 @@
       const maskI = DW.ipInput('255.255.255.0');
       const gwI = DW.ipInput('', 'default-router');
       const dnsI = DW.ipInput('', 'необязательно');
+      const tftpI = DW.ipInput('', 'для IP-телефонов (CME)');
       netI.addEventListener('blur', () => {
         const v = U.parseIp(netI.value);
         const m = U.parseMask(maskI.value);
@@ -78,10 +79,13 @@
         const cmds = ['ip dhcp pool ' + nameI.value.trim(), 'network ' + U.ipStr(U.net(n.v, m.v)) + ' ' + U.ipStr(m.v)];
         if (g.v != null) cmds.push('default-router ' + U.ipStr(g.v));
         if (d.v != null) cmds.push('dns-server ' + U.ipStr(d.v));
+        const t = DW.readIp(tftpI, false);
+        if (!t.ok) { e.textContent = 'TFTP: ' + t.err; return; }
+        if (t.v != null) cmds.push('option 150 ip ' + U.ipStr(t.v));
         DW.iosApply(app, app.net.getDevice(id), cmds, e);
       };
       box.appendChild(DW.section('Добавить пул'));
-      box.appendChild(DW.form(lbl('Имя пула'), nameI, lbl('Сеть'), netI, lbl('Маска'), maskI, lbl('Шлюз (default-router)'), gwI, lbl('DNS-сервер'), dnsI,
+      box.appendChild(DW.form(lbl('Имя пула'), nameI, lbl('Сеть'), netI, lbl('Маска'), maskI, lbl('Шлюз (default-router)'), gwI, lbl('DNS-сервер'), dnsI, lbl('TFTP (option 150)'), tftpI,
         h('span'), h('div', { class: 'row' }, h('button', { class: 'btn primary small', onClick: add }, 'Добавить пул'), e)));
       const exFrom = DW.ipInput('', 'от');
       const exTo = DW.ipInput('', 'до (необязательно)');
@@ -108,6 +112,7 @@
     const nameI = h('input', { class: 'inp', value: svc.pools.length ? 'serverPool' + (svc.pools.length + 1) : 'serverPool' });
     const gwI = DW.ipInput('', 'шлюз для клиентов');
     const dnsI = DW.ipInput('', 'необязательно');
+    const tftpI = DW.ipInput('', 'необязательно (option 150)');
     const startI = DW.ipInput('', 'напр. 192.168.1.100');
     const maskI = DW.ipInput('255.255.255.0');
     const countI = h('input', { class: 'inp', type: 'number', min: 1, value: 50 });
@@ -122,7 +127,9 @@
       if (!d.ok) { e.textContent = 'DNS: ' + d.err; return null; }
       const n = parseInt(countI.value, 10);
       if (!(n > 0)) { e.textContent = 'Максимальное число пользователей должно быть больше 0'; return null; }
-      return { name: nameI.value, start: st.v, end: st.v + n - 1, mask: m.v, gateway: g.v, dns: d.v };
+      const t = DW.readIp(tftpI, false);
+      if (!t.ok) { e.textContent = 'TFTP: ' + t.err; return null; }
+      return { name: nameI.value, start: st.v, end: st.v + n - 1, mask: m.v, gateway: g.v, dns: d.v, tftp: t.v };
     };
     startI.addEventListener('blur', () => {
       const v = U.parseIp(startI.value);
@@ -132,12 +139,13 @@
       nameI.value = p.name;
       gwI.value = ipT(p.gateway);
       dnsI.value = ipT(p.dns);
+      tftpI.value = ipT(p.tftp);
       startI.value = U.ipStr(p.start);
       maskI.value = U.ipStr(p.mask);
       countI.value = p.end - p.start + 1;
       nameI.dataset.edit = p.name;
     };
-    box.appendChild(DW.form(lbl('Имя пула'), nameI, lbl('Шлюз по умолчанию'), gwI, lbl('DNS-сервер'), dnsI, lbl('Начальный IP'), startI, lbl('Маска подсети'), maskI, lbl('Максимум пользователей'), countI,
+    box.appendChild(DW.form(lbl('Имя пула'), nameI, lbl('Шлюз по умолчанию'), gwI, lbl('DNS-сервер'), dnsI, lbl('TFTP (option 150)'), tftpI, lbl('Начальный IP'), startI, lbl('Маска подсети'), maskI, lbl('Максимум пользователей'), countI,
       h('span'), h('div', { class: 'row' },
         h('button', { class: 'btn primary small', onClick: () => { const p = read(); if (p) DW.apply(app, () => { app.net.getDevice(id).dhcpd.setPool(p); app.nudgeDhcp(); }, e); } }, 'Добавить'),
         h('button', { class: 'btn outline small', onClick: () => { const p = read(); if (p) DW.apply(app, () => { app.net.getDevice(id).dhcpd.setPool(p, nameI.dataset.edit || p.name); app.nudgeDhcp(); }, e); } }, 'Сохранить'),
@@ -262,7 +270,7 @@
       flush: true,
       live: null,
       render(body) {
-        const items = [{ group: 'SERVICES' }, { id: 'http', label: 'HTTP' }, { id: 'dhcp', label: 'DHCP' }, { id: 'tftp', label: 'TFTP' }, { id: 'dns', label: 'DNS' }, { id: 'email', label: 'EMAIL' }];
+        const items = [{ group: 'SERVICES' }, { id: 'http', label: 'HTTP' }, { id: 'dhcp', label: 'DHCP' }, { id: 'tftp', label: 'TFTP' }, { id: 'dns', label: 'DNS' }, { id: 'email', label: 'EMAIL' }, { id: 'iot', label: 'IoT' }];
         tab.live = null;
         DW.sidebarLayout(body, items, st, 'sec', (sec, box) => {
           const dev = app.net.getDevice(id);
@@ -272,6 +280,7 @@
           else if (sec === 'dhcp') { tab.live = DW.dhcpSection(app, id, box, false); tab.live(); }
           else if (sec === 'dns') dnsSection(app, id, box);
           else if (sec === 'email') emailSection(app, id, box);
+          else if (sec === 'iot') { tab.live = DW.iotServerSection(app, dev, box); tab.live(); }
           else tftpSection(app, id, box);
         });
       },

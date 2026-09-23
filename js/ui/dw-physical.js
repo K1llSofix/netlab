@@ -42,6 +42,12 @@
       case 'wireless':
         g.append(s('path', { d: 'M-8 4 a10 10 0 0 1 16 0 M-5 1 a6 6 0 0 1 10 0', fill: 'none', stroke: '#93c5fd', 'stroke-width': 1.6 }), s('circle', { cx: 0, cy: 5, r: 1.8, fill: '#93c5fd' }));
         break;
+      case 'phone':
+        g.append(s('rect', { x: -7, y: -6, width: 14, height: 12, rx: 1.5, fill: '#1b1f25', stroke: '#a16207' }), s('path', { d: 'M-3 -2 H3 V2 H1.5 V4 H-1.5 V2 H-3 Z', fill: '#57534e' }));
+        break;
+      case 'iot':
+        g.append(s('rect', { x: -6, y: -6, width: 12, height: 12, rx: 1, fill: '#111827', stroke: '#7c3aed' }), s('rect', { x: -2, y: -2, width: 4, height: 4, fill: '#fde68a' }));
+        break;
       default:
         g.append(s('rect', { x: -9, y: -7, width: 18, height: 14, rx: 1.5, fill: '#1b1f25', stroke: '#8792a2' }), s('path', { d: 'M-5 -3 H5 V3 H3 V5 H-3 V3 H-5 Z', fill: '#3b4250' }));
     }
@@ -108,10 +114,43 @@
       L.body.push({ kind: 'chassis', x: 10, y: 10, w: 380, h: 90, fill: '#5b6b80' });
       L.power = [40, 58];
       dev.ports.forEach((p, i) => put(p.name, 90 + i * 38, 62));
-    } else if (t === 'ap' || t === 'wrouter') {
-      const wr = t === 'wrouter';
+    } else if (t === 'smartphone') {
+      L.w = 260; L.h = 240;
+      L.body.push({ kind: 'phonebody', x: 80, y: 14, w: 100, h: 210 });
+      L.power = [196, 60];
+      put('Wireless0', 130, 40);
+    } else if (t === 'ipphone') {
+      L.w = 460; L.h = 240;
+      L.body.push({ kind: 'deskphone', x: 20, y: 20, w: 420, h: 150 });
+      L.power = [60, 205];
+      put('Switch', 250, 205);
+      put('PC', 310, 205);
+      L.adapter = [390, 205];
+    } else if (t === 'cloud') {
+      L.w = 520; L.h = 220;
+      L.body.push({ kind: 'cloudbody', x: 20, y: 10, w: 480, h: 200 });
+      for (let n = 0; n < 8; n++) put('Modem' + n, 110 + (n % 4) * 90, n < 4 ? 110 : 160);
+    } else if (t === 'btspeaker' || t === 'btheadset') {
+      L.w = 300; L.h = 220;
+      L.body.push({ kind: t === 'btspeaker' ? 'speaker' : 'headset', x: 70, y: 16, w: 160, h: 190 });
+      L.power = [150, 196];
+    } else if (t === 'iot') {
+      L.w = 440; L.h = 250;
+      L.body.push({ kind: 'thing', x: 20, y: 20, w: 180, h: 210, label: dev.model });
+      L.power = [110, 200];
+      L.body.push({ kind: 'rear', x: 220, y: 20, w: 200, h: 210 });
+      L.slots.nic = [240, 150, 160, 56];
+    } else if (t === 'mcu' || t === 'sbc' || t === 'iotcomp') {
+      const pins = dev.ports.map((p, i) => ({ p, i })).filter((x) => x.p.media === 'iot');
+      L.w = t === 'iotcomp' ? 300 : 520; L.h = t === 'sbc' ? 280 : 220;
+      L.body.push({ kind: 'board', x: 20, y: 20, w: L.w - 40, h: t === 'sbc' ? 170 : L.h - 40, fill: t === 'mcu' ? '#1d4ed8' : t === 'sbc' ? '#15803d' : '#334155', label: dev.model });
+      L.power = t === 'iotcomp' ? null : [56, 70];
+      pins.forEach((x, k) => { L.ports[x.i] = t === 'iotcomp' ? [150, 150] : [120 + (k % 6) * 56, k < 6 ? 110 : 160]; });
+      if (t === 'sbc') L.slots.nic = [180, 200, 170, 60];
+    } else if (t === 'ap' || t === 'wrouter' || t === 'homegw') {
+      const wr = t !== 'ap';
       L.w = wr ? 440 : 340; L.h = 190;
-      L.body.push({ kind: 'ap', x: 20, y: 70, w: L.w - 40, h: 100, antennas: wr ? 3 : 2 });
+      L.body.push({ kind: 'ap', x: 20, y: 70, w: L.w - 40, h: 100, antennas: wr ? 3 : 2, label: t === 'homegw' ? 'Home Gateway DLC100' : null });
       L.power = [56, 136];
       if (wr) {
         put('Internet', 130, 136);
@@ -170,9 +209,43 @@
           g.appendChild(s('line', { x1: ax, y1: b.y, x2: ax, y2: b.y - 56, stroke: '#1f2937', 'stroke-width': 7, 'stroke-linecap': 'round' }));
         }
         g.appendChild(s('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 14, fill: '#27303d', stroke: '#111827' }));
-        g.appendChild(s('text', { x: b.x + 18, y: b.y + 26, class: 'phys-label light' }, b.antennas === 3 ? 'Linksys WRT300N' : 'AccessPoint-PT'));
+        g.appendChild(s('text', { x: b.x + 18, y: b.y + 26, class: 'phys-label light' }, b.label || (b.antennas === 3 ? 'Linksys WRT300N' : 'AccessPoint-PT')));
         break;
       }
+      case 'phonebody':
+        g.appendChild(s('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 16, fill: '#111827', stroke: '#4b5563' }));
+        g.appendChild(s('rect', { x: b.x + 8, y: b.y + 40, width: b.w - 16, height: b.h - 70, rx: 3, fill: '#1d3b63' }));
+        g.appendChild(s('text', { x: b.x + b.w / 2, y: b.y + 120, 'text-anchor': 'middle', class: 'phys-label light small' }, 'Wi-Fi и Bluetooth'));
+        break;
+      case 'deskphone':
+        g.appendChild(s('path', { d: 'M' + (b.x + 90) + ' ' + (b.y + b.h) + ' L' + (b.x + 120) + ' ' + b.y + ' H' + (b.x + b.w - 20) + ' L' + (b.x + b.w) + ' ' + (b.y + b.h) + ' Z', fill: '#4b5563', stroke: '#1f2937' }));
+        g.appendChild(s('rect', { x: b.x, y: b.y - 6, width: 70, height: b.h + 6, rx: 24, fill: '#1f2937' }));
+        g.appendChild(s('rect', { x: b.x + 150, y: b.y + 18, width: 200, height: 56, rx: 4, fill: '#a7f3d0', stroke: '#065f46' }));
+        g.appendChild(s('text', { x: b.x + 250, y: b.y + 50, 'text-anchor': 'middle', class: 'phys-label small' }, 'Cisco IP Phone 7960'));
+        for (let r = 0; r < 4; r++) for (let c = 0; c < 3; c++) g.appendChild(s('rect', { x: b.x + 220 + c * 24, y: b.y + 84 + r * 15, width: 18, height: 10, rx: 2, fill: '#9aa5b3' }));
+        break;
+      case 'cloudbody':
+        g.appendChild(s('path', { d: 'M' + (b.x + 70) + ' ' + (b.y + b.h - 10) + 'a55 55 0 0 1 10-105 80 80 0 0 1 150-40 70 70 0 0 1 140 20 55 55 0 0 1 60 60 45 45 0 0 1-40 65z', fill: '#dbeafe', stroke: '#2563eb', 'stroke-width': 2 }));
+        g.appendChild(s('text', { x: b.x + b.w / 2, y: b.y + 70, 'text-anchor': 'middle', class: 'phys-label' }, 'Телефонная сеть Cloud-PT — порты Modem'));
+        break;
+      case 'speaker':
+        g.appendChild(s('rect', { x: b.x + 20, y: b.y, width: b.w - 40, height: b.h - 20, rx: 22, fill: '#334155', stroke: '#0f172a' }));
+        g.appendChild(s('circle', { cx: b.x + b.w / 2, cy: b.y + 110, r: 45, fill: '#0f172a', stroke: '#64748b', 'stroke-width': 3 }));
+        g.appendChild(s('text', { x: b.x + b.w / 2, y: b.y + 36, 'text-anchor': 'middle', class: 'phys-label light small' }, 'Bluetooth'));
+        break;
+      case 'headset':
+        g.appendChild(s('path', { d: 'M' + (b.x + 20) + ' ' + (b.y + 120) + ' V' + (b.y + 90) + ' a60 60 0 0 1 120 0 V' + (b.y + 120), fill: 'none', stroke: '#334155', 'stroke-width': 14, 'stroke-linecap': 'round' }));
+        g.appendChild(s('rect', { x: b.x, y: b.y + 105, width: 44, height: 64, rx: 16, fill: '#1d4ed8' }));
+        g.appendChild(s('rect', { x: b.x + b.w - 44, y: b.y + 105, width: 44, height: 64, rx: 16, fill: '#1d4ed8' }));
+        break;
+      case 'thing':
+        g.appendChild(s('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 14, fill: '#e2e8f0', stroke: '#64748b' }));
+        g.appendChild(s('text', { x: b.x + b.w / 2, y: b.y + 30, 'text-anchor': 'middle', class: 'phys-label small' }, b.label));
+        break;
+      case 'board':
+        g.appendChild(s('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 8, fill: b.fill, stroke: '#0f172a' }));
+        g.appendChild(s('text', { x: b.x + 16, y: b.y + 24, class: 'phys-label light' }, b.label));
+        break;
       default: break;
     }
   }
@@ -246,7 +319,7 @@
           const d = app.net.getDevice(id);
           if (!d) return;
           // перерисовываем только при изменениях — иначе перетаскивание модуля прерывалось бы
-          const sig = JSON.stringify([d.power, st.zoom, d.slots.map((x) => x.module), d.ports.map((p, i) => ledColor(app.net, d, i) + (p.link || '') + (p.radio && p.wlinks ? p.wlinks.size : ''))]);
+          const sig = JSON.stringify([d.power, d.adapter, st.zoom, d.slots.map((x) => x.module), d.ports.map((p, i) => ledColor(app.net, d, i) + (p.link || '') + (p.radio && p.wlinks ? p.wlinks.size : ''))]);
           if (sig === st.sig && stage.isConnected && stage.firstChild) return;
           st.sig = sig;
           const L = layout(d);
@@ -302,7 +375,7 @@
             const issue = p.link && app.net.links.get(p.link) ? app.net.linkIssue(app.net.links.get(p.link)) : null;
             g.appendChild(s('title', null, p.name + ' — ' + (p.link || p.radio ? peer : 'не подключён') + (issue ? '\n' + issue : '') + (p.errDisabled ? '\nerr-disabled (port-security)' : '')));
             svg.appendChild(g);
-            if (d.type === 'router' || d.type === 'hub' || d.type === 'ap' || d.type === 'wrouter' || p.media === 'rs232') {
+            if (['router', 'hub', 'ap', 'wrouter', 'homegw', 'cloud', 'ipphone', 'mcu', 'sbc', 'iotcomp'].includes(d.type) || p.media === 'rs232' || p.media === 'phone') {
               svg.appendChild(s('text', { x: pos[0], y: pos[1] + 20, 'text-anchor': 'middle', class: 'phys-label tiny light' }, UI.shortIf(p.name)));
             }
           });
@@ -315,6 +388,17 @@
               s('circle', { cx: 18, cy: -8, r: 3, fill: d.power ? '#22c55e' : '#374151' }),
               s('title', null, d.power ? 'Выключить питание' : 'Включить питание'));
             g.addEventListener('click', () => app.togglePower(id));
+            svg.appendChild(g);
+          }
+          // гнездо адаптера питания IP-телефона
+          if (L.adapter) {
+            const [ax, ay] = L.adapter;
+            const g = s('g', { class: 'phys-power', transform: 'translate(' + ax + ',' + ay + ')' });
+            g.append(s('rect', { x: -12, y: -9, width: 24, height: 18, rx: 4, fill: '#1f2937', stroke: d.adapter ? '#22c55e' : '#94a3b8', 'stroke-width': 2 }),
+              s('circle', { r: 3.2, fill: d.adapter ? '#22c55e' : '#6b7280' }),
+              s('title', null, d.adapter ? 'Адаптер питания подключён — щёлкните, чтобы отключить' : 'Подключить адаптер питания (или используйте PoE-коммутатор 3560-24PS)'));
+            svg.appendChild(s('text', { x: ax, y: ay + 24, 'text-anchor': 'middle', class: 'phys-label tiny light' }, d.adapter ? 'Адаптер: вкл' : 'Адаптер: нет'));
+            g.addEventListener('click', () => DW.apply(app, () => app.net.getDevice(id).setAdapter(!app.net.getDevice(id).adapter)));
             svg.appendChild(g);
           }
           stage.appendChild(svg);
@@ -336,6 +420,10 @@
   };
 
   function d0status(dev) {
+    if (dev.type === 'ipphone') {
+      const src = dev.powerSource();
+      return src === 'poe' ? 'Питание по кабелю (PoE) от коммутатора.' : src === 'adapter' ? 'Питание от адаптера.' : 'Нет питания: подключите адаптер (щелчок по гнезду справа) или порт Switch к PoE-коммутатору 3560-24PS.';
+    }
     return dev.power ? 'Питание включено. Модули меняются только при выключенном питании.' : 'Питание выключено — можно менять модули.';
   }
 

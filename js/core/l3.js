@@ -58,10 +58,12 @@
       this.dnsCache = new Map();
       this.tcp = NS.TcpStack ? new NS.TcpStack(this) : null;
       if (this.nat) this.nat.clearDynamic();
+      for (const hk of IpNode.hooks.runtime) hk.call(this);
     }
 
     bindServices() {
       this.udp.set(68, (pkt) => this.onDhcpClient(pkt));
+      for (const hk of IpNode.hooks.bind) hk.call(this);
     }
 
     reset() {
@@ -119,12 +121,16 @@
     ifaceUp(f) {
       if (!f || !f.adminUp || !this.power) return false;
       if (f.kind === 'loop') return true;
+      const hk = IpNode.ifaceUpHooks[f.kind];
+      if (hk) return hk.call(this, f);
       if (f.kind === 'sub' && f.vlan == null) return false;
       return this.net.isPortOperational(this, f.port);
     }
 
-    ifaceMac(f) { return f.kind === 'loop' ? null : this.ports[f.port].mac; }
-    isSerial(f) { return f.kind !== 'loop' && f.kind !== 'svi' && this.ports[f.port] && this.ports[f.port].media === 'serial'; }
+    ifaceMac(f) { return f.kind === 'loop' || f.port < 0 || !this.ports[f.port] ? null : this.ports[f.port].mac; }
+    isSerial(f) { return f.kind !== 'loop' && f.kind !== 'svi' && !!this.ports[f.port] && this.ports[f.port].media === 'serial' && !f.p2p; }
+    /** Канал «точка-точка» без ARP: serial, PPPoE, туннель, модем. */
+    isP2P(f) { return !!f && (this.isSerial(f) || !!f.p2p); }
 
     /** Отправить кадр через интерфейс (коммутатор переопределяет для SVI). */
     ifaceSend(f, frame, why) { return this.send(f.port, frame, why); }
@@ -175,7 +181,7 @@
       this.flushIface(f, 'down');
       this.conflict = null;
       this.net.markRouting();
-      if (f.ip != null && f.kind !== 'loop' && !this.isSerial(f) && this.ifaceUp(f)) this.sendGratuitous(f);
+      if (f.ip != null && f.kind !== 'loop' && !this.isP2P(f) && this.ifaceUp(f)) this.sendGratuitous(f);
       this.net.emit('config', { dev: this });
     }
 
@@ -205,7 +211,7 @@
       for (const f of this.ifaces) {
         if (f.port !== i || f.kind === 'loop' || f.kind === 'svi') continue;
         if (!up) this.flushIface(f, 'down');
-        else if (f.ip != null && f.adminUp && !this.isSerial(f)) this.sendGratuitous(f);
+        else if (f.ip != null && f.adminUp && !this.isP2P(f)) this.sendGratuitous(f);
         if (up && f.dhcp && (!this.dhcpc || this.dhcpc.phase === 'failed' || this.dhcpc.phase === 'wait-link')) this.startDhcp(f);
       }
     }
@@ -254,6 +260,8 @@
       for (const f of this.ifaces) {
         if (f.ip == null || !this.ifaceUp(f)) continue;
         if (U.sameNet(dst, f.ip, f.mask)) take({ type: 'C', ad: 0, prefix: U.prefixFromMask(f.mask), net: U.net(f.ip, f.mask), mask: f.mask, ifc: f, nextHop: null });
+        // собеседник на канале «точка-точка» (PPPoE, модем, VPN-клиент)
+        if (f.peer != null && dst === f.peer) take({ type: 'C', ad: 0, prefix: 32, net: dst, mask: 0xFFFFFFFF, ifc: f, nextHop: null });
       }
       for (const r of this.staticRoutes()) {
         if (U.net(dst, r.mask) !== r.net) continue;
@@ -284,6 +292,8 @@
       const rows = [];
       for (const f of this.ifaces) {
         if (f.ip == null || !this.ifaceUp(f)) continue;
+        if (f.peer != null) rows.push({ type: 'C', ad: 0, metric: 0, net: f.peer, mask: 0xFFFFFFFF, nextHop: null, ifname: f.name, active: true });
+        if (f.peer != null && U.prefixFromMask(f.mask) === 32) continue;
         rows.push({ type: 'C', ad: 0, metric: 0, net: U.net(f.ip, f.mask), mask: f.mask, nextHop: null, ifname: f.name, active: true });
         if (this.forwarding && U.prefixFromMask(f.mask) < 32) rows.push({ type: 'L', ad: 0, metric: 0, net: f.ip, mask: 0xFFFFFFFF, nextHop: null, ifname: f.name, active: true });
       }
@@ -343,6 +353,7 @@
         return false;
       };
       if (!this.power) return fail('off');
+      for (const hk of IpNode.hooks.send) if (hk.call(this, pkt, opts)) return true;
       const dst = pkt.dst;
 
       if (this.hasIp(dst)) {
@@ -376,7 +387,8 @@
     }
 
     resolveAndSend(f, nh, pkt, opts) {
-      if (this.isSerial(f)) {
+      for (const hk of IpNode.hooks.egress) if (hk.call(this, f, nh, pkt, opts)) return;
+      if (this.isP2P(f)) {
         this.sendFrameIp(f, null, pkt, opts.why);
         return;
       }
@@ -419,6 +431,8 @@
     }
 
     sendFrameIp(f, dstMac, pkt, why) {
+      const snd = IpNode.ifaceSenders[f.kind];
+      if (snd) return snd.call(this, f, pkt, why, dstMac);
       if (this.isSerial(f)) {
         const p = this.ports[f.port];
         const frame = { src: null, dst: null, type: 'IPv4', vlan: null, payload: pkt, hops: 0, encap: (p.encap || 'hdlc').toUpperCase() };
@@ -467,8 +481,10 @@
         const f = this.ifaces.find((x) => x.port === i && x.kind === 'phys');
         if (!f || !f.adminUp) { this.drop(frame, 'Интерфейс ' + p.name + ' выключен'); return; }
         if (frame.type === 'IPv4') this.onIp(f, frame.payload, frame);
+        else if (IpNode.ethertypes[frame.type]) IpNode.ethertypes[frame.type].call(this, f, frame);
         return;
       }
+      if (IpNode.portReceivers[p.media]) { IpNode.portReceivers[p.media].call(this, i, frame); return; }
       const tag = frame.vlan == null ? null : frame.vlan;
       const f = this.ifaces.find((x) => x.port === i && (x.kind === 'sub' ? x.vlan != null && x.vlan === tag : (x.kind === 'phys' || x.kind === 'routed') && tag === null));
       if (!f) {
@@ -484,12 +500,13 @@
         this.drop(frame, 'Интерфейс ' + f.name + ' выключен (shutdown)');
         return;
       }
-      if (frame.dst !== this.ifaceMac(f) && !U.isBroadcastMac(frame.dst)) {
+      if (frame.dst !== this.ifaceMac(f) && !U.isMulticastMac(frame.dst)) {
         this.drop(frame, 'Кадр адресован другому устройству (MAC ' + frame.dst + ')');
         return;
       }
       if (frame.type === 'ARP') this.onArp(f, frame.payload, frame);
       else if (frame.type === 'IPv4') this.onIp(f, frame.payload, frame);
+      else if (IpNode.ethertypes[frame.type]) IpNode.ethertypes[frame.type].call(this, f, frame);
       else this.drop(frame, 'Неизвестный протокол');
     }
 
@@ -535,6 +552,7 @@
     }
 
     onIp(f, pkt, frame) {
+      for (const hk of IpNode.hooks.ipIn) if (hk.call(this, f, pkt, frame)) return;
       if (f.aclIn) {
         const acl = this.aclDenies(f.aclIn, pkt);
         if (acl) {
@@ -571,6 +589,10 @@
         else this.portClosed(pkt, f, frame);
       } else if (pkt.proto === 'TCP') {
         if (this.tcp) this.tcp.onSegment(pkt, f, frame);
+      } else if (IpNode.ipProtos[pkt.proto]) {
+        IpNode.ipProtos[pkt.proto].call(this, pkt, f, frame);
+      } else if (frame) {
+        this.drop(frame, 'Протокол ' + pkt.proto + ' здесь не обрабатывается');
       }
     }
 
@@ -630,6 +652,7 @@
         this.drop(frame, 'TTL истёк — пакет уничтожен');
         return;
       }
+      for (const hk of IpNode.hooks.forward) if (hk.call(this, pkt, f, frame)) return;
       const r = this.lookup(pkt.dst);
       if (!r) {
         this.sendIcmpError(pkt, 'unreachable', 0, f);
@@ -668,6 +691,7 @@
         ? 'Сеть ' + U.cidr(r.net, r.mask) + ' подключена напрямую → ' + r.ifc.name
         : 'Маршрут ' + ({ S: 'статический', O: 'OSPF', R: 'RIP' }[r.type] || r.type) + ' ' + U.cidr(r.net, r.mask) +
           (r.nextHop != null ? ' через ' + U.ipStr(r.nextHop) : '') + ' → ' + r.ifc.name) + natNote;
+      for (const hk of IpNode.hooks.fwdOut) hk.call(this, f, r.ifc, out);
       this.resolveAndSend(r.ifc, r.nextHop != null ? r.nextHop : out.dst, out, {
         why,
         onError: () => this.sendIcmpError(pkt, 'unreachable', 1, f),
@@ -775,6 +799,7 @@
       c.server = d.serverId;
       c.router = d.router || null;
       c.dns = d.dns || null;
+      c.tftp = d.tftp || null;
       c.timer = null;
       this.dhcpStatus = 'Адрес получен от DHCP-сервера ' + U.ipStr(d.serverId);
       this.onDhcpBound(f, d);
@@ -821,11 +846,18 @@
 
     serializeIfaces() {
       const ip = (v) => (v == null ? null : U.ipStr(v));
-      return this.ifaces.map((f) => ({
-        name: f.name, kind: f.kind, port: f.port, pname: f.port >= 0 && this.ports[f.port] ? this.ports[f.port].name : null,
-        vlan: f.vlan, sub: f.kind === 'sub', ip: ip(f.ip), mask: ip(f.mask), adminUp: f.adminUp, dhcp: f.dhcp, helper: ip(f.helper),
-        aclIn: f.aclIn, aclOut: f.aclOut, nat: f.nat, desc: f.desc || '',
-      }));
+      return this.ifaces.filter((f) => !f.runtime).map((f) => {
+        const o = {
+          name: f.name, kind: f.kind, port: f.port, pname: f.port >= 0 && this.ports[f.port] ? this.ports[f.port].name : null,
+          vlan: f.vlan, sub: f.kind === 'sub', ip: ip(f.ip), mask: ip(f.mask), adminUp: f.adminUp, dhcp: f.dhcp, helper: ip(f.helper),
+          aclIn: f.aclIn, aclOut: f.aclOut, nat: f.nat, desc: f.desc || '',
+        };
+        for (const e of IpNode.ifaceExt) {
+          const v = e.save(f, this);
+          if (v !== undefined && v !== null) o[e.key] = v;
+        }
+        return o;
+      });
     }
 
     loadIface(f, s) {
@@ -839,6 +871,7 @@
       f.aclOut = s.aclOut || null;
       f.nat = s.nat === 'inside' || s.nat === 'outside' ? s.nat : null;
       f.desc = String(s.desc || '');
+      for (const e of IpNode.ifaceExt) e.load(f, s[e.key], this);
     }
 
     /** Найти порт сохранённого интерфейса: по имени порта, затем по индексу. */
@@ -876,5 +909,23 @@
 
   IpNode.ARP_TIMEOUT = ARP_TIMEOUT;
   IpNode.AD = AD;
+
+  /* ---------- точки расширения (IPv6, VPN, PPPoE, NetFlow, SNMP, VoIP, IoT…) ---------- */
+  IpNode.hooks = {
+    send: [],     // (pkt, opts) → true, если пакет перехвачен (VPN-клиент)
+    egress: [],   // (ifc, nextHop, pkt, opts) → true (шифрование crypto map)
+    ipIn: [],     // (ifc, pkt, frame) → true, если пакет поглощён (NetFlow только считает)
+    forward: [],  // (pkt, inIfc, frame) → true (обратный путь к VPN-клиенту)
+    fwdOut: [],   // (inIfc, outIfc, pkt) — пакет уходит дальше (NetFlow egress)
+    bind: [],     // () — привязать службы (UDP/TCP) после перезапуска
+    runtime: [],  // () — сбросить рабочее состояние (кэши, сеансы)
+  };
+  IpNode.ethertypes = {};     // тип кадра → (ifc, frame)
+  IpNode.ipProtos = {};       // протокол IP (GRE, ESP…) → (pkt, ifc, frame)
+  IpNode.ifaceUpHooks = {};   // вид интерфейса → (ifc) → bool
+  IpNode.ifaceSenders = {};   // вид интерфейса → (ifc, pkt, why, dstMac)
+  IpNode.ifaceKinds = {};     // вид интерфейса → { create(dev, saved), removable }
+  IpNode.ifaceExt = [];       // { key, save(ifc, dev), load(ifc, data, dev) }
+  IpNode.portReceivers = {};  // среда порта (модем, IoT) → (portIdx, frame)
   NS.IpNode = IpNode;
 })(globalThis.NetLab = globalThis.NetLab || {});

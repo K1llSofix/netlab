@@ -73,6 +73,19 @@
     attempt();
   };
 
+  /** Эхо-запрос по IPv4 или IPv6 (адрес — число или BigInt). */
+  IpNode.prototype.sendEcho = function (ip, id, seq, size, ttl, opts) {
+    if (typeof ip === 'bigint') return this.sendIp6(P.ipv6(null, ip, 'ICMPv6', P.echoRequest(id, seq, size), ttl || this.defaultTtl), opts);
+    return this.sendIp(P.ipv4(null, ip, 'ICMP', P.echoRequest(id, seq, size), ttl || this.defaultTtl), opts);
+  };
+
+  /** Адрес назначения: IPv6-литерал сразу, остальное — через DNS (IPv4). */
+  IpNode.prototype.resolveTarget = function (target, cb) {
+    const v6 = NS.ip6 ? NS.ip6.parse(String(target)) : null;
+    if (v6 != null) { cb(v6); return; }
+    this.resolveName(target, cb);
+  };
+
   /**
    * ping. o = { count (Infinity — до отмены), timeout, interval, ttl, size, onEvent(ev) }
    * События: start, reply, timeout, unreachable, ttl-expired, error, resolve-fail, done.
@@ -115,8 +128,7 @@
       const seq = ++sent;
       const probe = { seq, t0: this.net.time, done: false, replies: 0 };
       cur = probe;
-      const pkt = P.ipv4(null, ip, 'ICMP', P.echoRequest(id, seq, size), o.ttl || this.defaultTtl);
-      this.sendIp(pkt, {
+      this.sendEcho(ip, id, seq, size, o.ttl, {
         why: 'Эхо-запрос (ping) №' + seq,
         onError: (code, text) => {
           if (job.done || probe.done) return;
@@ -160,7 +172,7 @@
       scheduleNext();
     });
 
-    this.resolveName(target, (addr, err) => {
+    this.resolveTarget(target, (addr, err) => {
       if (job.done) return;
       if (addr == null) {
         emit({ type: 'resolve-fail', text: err });
@@ -168,7 +180,7 @@
         return;
       }
       ip = addr;
-      bcast = ip === U.BROADCAST_IP || this.ifaces.some((f) => this.isDirectedBcast(ip, f));
+      bcast = typeof ip !== 'bigint' && (ip === U.BROADCAST_IP || this.ifaces.some((f) => this.isDirectedBcast(ip, f)));
       emit({ type: 'start', ip, name: String(target), size, bcast });
       next();
     });
@@ -218,7 +230,7 @@
       const s = ++seq;
       const p = { seq: s, t0: this.net.time, done: false };
       hop.cur = p;
-      this.sendIp(P.ipv4(null, ip, 'ICMP', P.echoRequest(id, s, 32), ttl), {
+      this.sendEcho(ip, id, s, 32, ttl, {
         why: 'Трассировка: эхо-запрос с TTL=' + ttl,
         onError: (code, text) => {
           if (job.done || p.done) return;
@@ -260,7 +272,7 @@
       probe();
     });
 
-    this.resolveName(target, (addr, err) => {
+    this.resolveTarget(target, (addr, err) => {
       if (job.done) return;
       if (addr == null) {
         emit({ type: 'resolve-fail', text: err });
@@ -315,22 +327,26 @@
     u = u.replace(/^https?:\/\//i, '');
     if (!u) return null;
     const slash = u.indexOf('/');
-    const host = (slash >= 0 ? u.slice(0, slash) : u).toLowerCase();
+    let host = (slash >= 0 ? u.slice(0, slash) : u).toLowerCase();
+    let port = null;
+    const m = /^(.+):(\d{1,5})$/.exec(host);
+    if (m && Number(m[2]) >= 1 && Number(m[2]) <= 65535) { host = m[1]; port = Number(m[2]); }
     let path = slash >= 0 ? u.slice(slash) : '/';
     if (path === '/') path = '/index.html';
-    return host ? { host, path } : null;
+    return host ? { host, path, port } : null;
   };
 
   /** HTTP GET. cb({ok, status, body, error, url}). */
   IpNode.prototype.httpGet = function (url, cb) {
     const u = IpNode.parseUrl(url);
     if (!u) { cb({ ok: false, error: 'Введите адрес, например http://192.168.1.10' }); return null; }
-    return this.tcpRequest(u.host, P.PORT_HTTP, { http: 'GET', path: u.path, host: u.host }, (d) => d && d.http === 'RESP', (r) => {
+    const hp = u.host + (u.port && u.port !== P.PORT_HTTP ? ':' + u.port : '');
+    return this.tcpRequest(u.host, u.port || P.PORT_HTTP, { http: 'GET', path: u.path, host: u.host }, (d) => d && d.http === 'RESP', (r) => {
       if (!r.ok) {
-        cb({ ok: false, error: r.resolve ? 'Не удалось найти узел «' + u.host + '»: ' + r.error : r.error, url: 'http://' + u.host + u.path });
+        cb({ ok: false, error: r.resolve ? 'Не удалось найти узел «' + u.host + '»: ' + r.error : r.error, url: 'http://' + hp + u.path });
         return;
       }
-      cb({ ok: true, status: r.data.status, reason: r.data.reason, body: String(r.data.body || ''), url: 'http://' + u.host + u.path, host: u.host });
+      cb({ ok: true, status: r.data.status, reason: r.data.reason, body: String(r.data.body || ''), url: 'http://' + hp + u.path, host: hp });
     });
   };
 

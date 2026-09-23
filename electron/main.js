@@ -255,6 +255,16 @@ function runSmoke() {
         a.net.runUntilIdle();
         a.openDevice(pc.id, 'cli');
         const r = { desktop: !!window.netlabDesktop, devices: a.net.devices.size, received: got };
+        // программы плат выполняются в Web Worker без сети
+        r.worker = await new Promise((resolve) => {
+          let w;
+          try { w = new Worker('js/ui/script-worker.js'); } catch (e) { resolve('нет воркера: ' + e.message); return; }
+          const logs = [];
+          const t = setTimeout(() => { w.terminate(); resolve('тайм-аут: ' + logs.join('|')); }, 4000);
+          w.onmessage = (ev) => { if (ev.data.type === 'log' || ev.data.type === 'error') logs.push(ev.data.text); if (logs.length >= 2) { clearTimeout(t); w.terminate(); resolve(logs.join('|')); } };
+          w.onerror = (e) => { clearTimeout(t); resolve('ошибка: ' + e.message); };
+          w.postMessage({ type: 'run', code: 'function setup() { Serial.println("ok"); print(typeof fetch + "," + typeof XMLHttpRequest + "," + typeof WebSocket); }', inputs: {} });
+        });
         const u = await window.netlabDesktop.updateStatus();
         r.updates = { supported: u.supported, page: u.page, reason: u.reason };
         const target = ${JSON.stringify(saveTo)};
@@ -290,6 +300,7 @@ function runSmoke() {
     }
     const ok = !!res && res.desktop && errors.length === 0 &&
       (res.openedFile ? res.devices > 0 && !res.dirty : res.received === 3 && !!res.notes && res.notes.shown && res.notes.items > 0 &&
+        res.worker === 'ok|undefined,undefined,undefined' &&
         // в собранной программе адрес обновлений обязан найтись (в 1.1.0 его не было — обновления не работали)
         (!app.isPackaged || (!!res.updates && res.updates.supported && /^https:\/\//.test(res.updates.page))) &&
         (!saveTo || (res.savedTo === saveTo && res.reopenedDevices === res.devices && !res.dirtyAfterOpen && res.dirtyAfterEdit)));

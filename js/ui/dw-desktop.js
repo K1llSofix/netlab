@@ -53,7 +53,9 @@
       case 'telnet':
         g.push(s('rect', { x: 5, y: 12, width: 18, height: 14, rx: 1.5, fill: 'none', stroke: W, 'stroke-width': 2.2 }), s('rect', { x: 25, y: 22, width: 18, height: 14, rx: 1.5, fill: 'none', stroke: W, 'stroke-width': 2.2 }), s('path', { d: 'M14 30v6h8M34 18v-6h-8', stroke: W, 'stroke-width': 2.2, fill: 'none' }));
         break;
-      default: break;
+      default:
+        if (DW.appGlyphs && DW.appGlyphs[kind]) g.push(...DW.appGlyphs[kind](s, W));
+        break;
     }
     return s('svg', { viewBox: '0 0 48 48', width: 44, height: 44 }, g);
   }
@@ -103,9 +105,11 @@
       h('div', { class: 'row', style: { marginTop: '10px' } },
         h('button', { class: 'btn outline small', onClick: () => DW.apply(app, () => app.net.getDevice(id).setDhcp(), e) }, 'Обновить (ipconfig /renew)'),
         h('button', { class: 'btn outline small', onClick: () => DW.apply(app, () => app.net.getDevice(id).releaseDhcp(), e) }, 'Освободить (/release)')));
+    const v6live = DW.hostIpv6Form ? DW.hostIpv6Form(app, dev, box) : null;
     return () => {
       const d = app.net.getDevice(id);
       if (!d) return;
+      if (v6live) v6live();
       const x = d.iface;
       if (x.dhcp) {
         status.textContent = d.dhcpStatus || 'Запрос DHCP…';
@@ -194,7 +198,7 @@
     if (/^[a-z]+:/i.test(t)) return null;
     const b = NS.IpNode.parseUrl(base);
     if (!b) return t;
-    return 'http://' + b.host + '/' + t.replace(/^\/+/, '');
+    return 'http://' + b.host + (b.port ? ':' + b.port : '') + '/' + t.replace(/^\/+/, '');
   }
 
   function browserApp(app, id, box, st) {
@@ -739,6 +743,9 @@
     { id: 'firewall', title: 'Firewall', color: '#ea580c', render: firewallApp },
   ];
 
+  DW.desktopApps = APPS;
+  DW.appGlyph = glyph;
+
   const isTerm = (a, st) => !!a && (typeof a.term === 'function' ? a.term(st) : !!a.term);
 
   DW.desktopTab = function (app, id) {
@@ -748,7 +755,7 @@
       label: 'Рабочий стол',
       flush: true,
       live: null,
-      get keep() { return isTerm(APPS.find((a) => a.id === st.app), st); },
+      get keep() { const a = APPS.find((x) => x.id === st.app); return isTerm(a, st) || !!(a && a.keep); },
       render(body, win) {
         st.win = win;
         tab.live = null;
@@ -758,6 +765,7 @@
           st.app = null;
           const grid = h('div', { class: 'desk-grid' });
           for (const a of APPS) {
+            if (a.when && !a.when(dev)) continue;
             const badge = a.id === 'email' ? dev.emailBox.filter((m) => !m.read).length : a.id === 'messages' ? dev.inbox.filter((m) => !m.read).length : 0;
             grid.appendChild(h('button', { class: 'desk-icon', title: a.title, onClick: () => { st.app = a.id; win.select('desktop'); } },
               h('span', { class: 'tile', style: { background: a.color } }, glyph(a.id), badge ? h('span', { class: 'badge' }, String(badge)) : null), h('span', { class: 'cap' }, a.title)));

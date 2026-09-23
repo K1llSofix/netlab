@@ -6,6 +6,9 @@
   const U = NS.util;
 
   function tokenize(line) { return String(line).trim().split(/\s+/).filter(Boolean); }
+
+  /** Расширения: новые команды, перехват (ping по IPv6), строки ipconfig, справка. */
+  const EXT = { commands: {}, before: [], ipconfig: [], help: [] };
   function pad(s, n) { s = String(s); return s.length >= n ? s + ' ' : s + ' '.repeat(n - s.length); }
   function padL(s, n) { s = String(s); return s.length >= n ? s : ' '.repeat(n - s.length) + s; }
   function winMac(m) { return String(m || '').toLowerCase().replace(/:/g, '-'); }
@@ -77,10 +80,10 @@
           case 'start':
             dst = ev.ip;
             io.out('');
-            io.out('Обмен пакетами с ' + (U.parseIp(ev.name) != null ? U.ipStr(ev.ip) : ev.name + ' [' + U.ipStr(ev.ip) + ']') + ' с ' + ev.size + ' байтами данных:');
+            io.out('Обмен пакетами с ' + (U.parseIp(ev.name) != null || typeof ev.ip === 'bigint' ? U.ipStr(ev.ip) : ev.name + ' [' + U.ipStr(ev.ip) + ']') + ' с ' + ev.size + ' байтами данных:');
             break;
           case 'reply':
-            io.out('Ответ от ' + U.ipStr(ev.from) + ': число байт=' + ev.bytes + ' время' + (ev.rtt < 1 ? '<1' : '=' + ev.rtt) + 'мс TTL=' + ev.ttl);
+            io.out('Ответ от ' + U.ipStr(ev.from) + ': ' + (typeof ev.from === 'bigint' ? '' : 'число байт=' + ev.bytes + ' ') + 'время' + (ev.rtt < 1 ? '<1' : '=' + ev.rtt) + 'мс' + (typeof ev.from === 'bigint' ? '' : ' TTL=' + ev.ttl));
             break;
           case 'timeout':
             io.out('Превышен интервал ожидания для запроса.');
@@ -97,7 +100,8 @@
             hints.add('Подсказка: вероятна петля маршрутизации — проверьте статические маршруты.');
             break;
           case 'error':
-            if (ev.code === 'arp-fail') io.out('Ответ от ' + own() + ': Заданный узел недоступен.');
+            if (ev.code === 'arp-fail' || ev.code === 'nd-fail') io.out('Ответ от ' + (typeof dst === 'bigint' ? U.ipStr(dev.srcFor6(dev.iface, dst)) : own()) + ': Заданный узел недоступен.');
+            else if (ev.code === 'no-route' && typeof dst === 'bigint') { io.out('PING: сбой передачи. Общий сбой.'); hints.add('Подсказка: нет IPv6-маршрута. Задайте шлюз IPv6 или включите автонастройку (на маршрутизаторе нужен ipv6 unicast-routing).'); break; }
             else io.out('PING: сбой передачи. Общий сбой.');
             { const h = hint(dev, ev.code, dst); if (h) hints.add(h); }
             break;
@@ -146,7 +150,7 @@
         } else if (ev.type === 'start') {
           dst = ev.ip;
           io.out('');
-          io.out('Трассировка маршрута к ' + (U.parseIp(ev.name) != null ? U.ipStr(ev.ip) : ev.name + ' [' + U.ipStr(ev.ip) + ']'));
+          io.out('Трассировка маршрута к ' + (U.parseIp(ev.name) != null || typeof ev.ip === 'bigint' ? U.ipStr(ev.ip) : ev.name + ' [' + U.ipStr(ev.ip) + ']'));
           io.out('с максимальным числом прыжков ' + ev.maxHops + ':');
           io.out('');
         } else if (ev.type === 'hop') {
@@ -230,6 +234,7 @@
       if (f.port >= 0) io.out('   Физический адрес. . . . . . . . . : ' + winMac(dev.ifaceMac(f)).toUpperCase());
       io.out('   DHCP включен. . . . . . . . . . . : ' + (f.dhcp ? 'Да' : 'Нет'));
     }
+    for (const fn of EXT.ipconfig) fn(dev, f, all, io);
     io.out('   IPv4-адрес. . . . . . . . . . . . : ' + (f.ip != null ? U.ipStr(f.ip) + (dev.conflict ? ' (Дубликат)' : '') : '—'));
     io.out('   Маска подсети . . . . . . . . . . : ' + (f.mask != null ? U.ipStr(f.mask) : '—'));
     io.out('   Основной шлюз. . . . . . . . . : ' + (dev.gateway != null ? U.ipStr(dev.gateway) : ''));
@@ -304,8 +309,12 @@
     if (!t.length) return null;
     const cmd = t[0].toLowerCase();
     const args = t.slice(1);
+    for (const fn of EXT.before) {
+      const r = fn(dev, s, cmd, args, io, line);
+      if (r !== undefined) return r;
+    }
     switch (cmd) {
-      case 'help': case '?': HELP.forEach((l) => io.out(l)); return null;
+      case 'help': case '?': HELP.slice(0, -1).concat(EXT.help, HELP.slice(-1)).forEach((l) => io.out(l)); return null;
       case 'ping': return ping(dev, args, io);
       case 'tracert': case 'traceroute': return tracert(dev, args, io);
       case 'ipconfig': return ipconfig(dev, args, io);
@@ -325,6 +334,7 @@
       case 'hostname': io.out(dev.name); return null;
       case 'cls': case 'clear': io.clear(); return null;
       default:
+        if (EXT.commands[cmd]) return EXT.commands[cmd](dev, s, args, io, line);
         io.out('"' + t[0] + '" не является внутренней или внешней командой,');
         io.out('исполняемой программой или пакетным файлом. Введите help для списка команд.');
         return null;
@@ -336,9 +346,9 @@
   function complete(line) {
     const t = tokenize(line);
     if (t.length !== 1 || /\s$/.test(line)) return line;
-    const c = COMMANDS.filter((x) => x.startsWith(t[0].toLowerCase()));
+    const c = COMMANDS.concat(Object.keys(EXT.commands)).filter((x) => x.startsWith(t[0].toLowerCase()));
     return c.length === 1 ? c[0] + ' ' : line;
   }
 
-  NS.cliHost = { exec, complete };
+  NS.cliHost = { exec, complete, ext: EXT, hint, pad, padL, tokenize };
 })(globalThis.NetLab = globalThis.NetLab || {});

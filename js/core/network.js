@@ -11,7 +11,7 @@
   const MAX_L2_HOPS = 64;        // защита от петель через концентраторы
   const WIFI_RANGE = 420;        // дальность Wi-Fi в единицах схемы
 
-  const DATA_MEDIA = new Set(['copper', 'fiber', 'serial', 'wireless']);
+  const DATA_MEDIA = new Set(['copper', 'fiber', 'serial', 'wireless', 'phone', 'iot']);
 
   const CABLES = {
     auto: 'Автоматически',
@@ -20,6 +20,8 @@
     fiber: 'Оптоволокно',
     console: 'Консольный',
     serial: 'Serial',
+    phone: 'Телефонный',
+    iot: 'IoT (кастомный)',
     wireless: 'Беспроводная связь',
   };
 
@@ -34,7 +36,9 @@
       case 'fiber': return p.media === 'fiber';
       case 'console': return p.media === 'console' || p.media === 'rs232';
       case 'serial': return p.media === 'serial';
-      default: return p.media === 'copper' || p.media === 'fiber' || p.media === 'serial';
+      case 'phone': return p.media === 'phone';
+      case 'iot': return p.media === 'iot';
+      default: return p.media === 'copper' || p.media === 'fiber' || p.media === 'serial' || p.media === 'phone' || p.media === 'iot';
     }
   }
 
@@ -211,6 +215,8 @@
 
     /** Конкретный тип кабеля для «Автоматически». */
     static resolveCable(pa, pb) {
+      if (pa.media === 'phone') return 'phone';
+      if (pa.media === 'iot') return 'iot';
       if (pa.media === 'fiber') return 'fiber';
       if (pa.media === 'serial') return 'serial';
       if (pa.media === 'console' || pa.media === 'rs232') return 'console';
@@ -510,6 +516,10 @@
       }
       const f = U.clone(frame);
       f.hops = hops;
+      const bytes = P.sizeOf(f);
+      const sp = dev.ports[portIdx];
+      sp.txPkts = (sp.txPkts || 0) + 1;
+      sp.txBytes = (sp.txBytes || 0) + bytes;
       const ev = this.schedule({ kind: 'frame', time: this.time + LINK_DELAY, start: this.time, link: link.id, from: dev.id, fromPort: portIdx, to: toDev.id, port: toPort, frame: f });
       this.inFlight.set(ev.seq, ev);
       if (this.activity.length < 2000) this.activity.push(link.id);
@@ -588,6 +598,9 @@
           this.logDrop(dev, ev.frame, 'Порт отключён');
           return;
         }
+        const rp = dev.ports[ev.port];
+        rp.rxPkts = (rp.rxPkts || 0) + 1;
+        rp.rxBytes = (rp.rxBytes || 0) + P.sizeOf(ev.frame);
         try { dev.receive(ev.port, ev.frame); } catch (e) { console.error(e); this.emit('error', e); }
       } else if (ev.kind === 'timer') {
         if (ev.cancelled) return;

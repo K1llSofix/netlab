@@ -719,6 +719,11 @@ textarea.inp { height: auto; padding: 7px 9px; resize: vertical; }
 .link-line.c-console { stroke: #38bdf8; stroke-width: 1.8; stroke-dasharray: 2 4; stroke-linecap: round; }
 .link-line.c-serial { stroke: #ef4444; stroke-width: 2.4; }
 .link-line.c-wireless { stroke: #60a5fa; stroke-width: 1.4; stroke-dasharray: 3 6; opacity: .75; }
+.link-line.c-phone { stroke: #a16207; stroke-width: 1.8; stroke-dasharray: 1.5 3; stroke-linecap: round; }
+.link-line.c-iot { stroke: #7c3aed; stroke-width: 1.8; }
+.link-line.c-bt { stroke: #2563eb; stroke-width: 1.6; stroke-dasharray: 2 5; stroke-linecap: round; opacity: .8; pointer-events: none; }
+.dev-status.ok { fill: #15803d; }
+.dev-status.warn { fill: #b45309; }
 .link-line.hot { stroke: var(--link-hot); stroke-width: 3; opacity: 1; }
 .link-line.sel { stroke: var(--accent-2); stroke-width: 3.5; }
 .dce-clock circle { fill: var(--stage); stroke: #ef4444; stroke-width: 1.5; }
@@ -758,3 +763,55 @@ textarea.inp { height: auto; padding: 7px 9px; resize: vertical; }
 .upd-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .upd-bar { height: 8px; border-radius: 4px; background: var(--panel-3); overflow: hidden; margin-bottom: 6px; }
 .upd-bar span { display: block; height: 100%; background: var(--accent); transition: width .2s; }
+
+/* ---------- IoT, программирование, телефон, MIB Browser ---------- */
+.thing-panel { display: flex; gap: 18px; align-items: flex-start; }
+.thing-icon { flex: none; width: 140px; height: 110px; display: grid; place-items: center; background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; }
+.seg { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.range { width: 220px; accent-color: var(--accent); }
+.small { font-size: 12px; }
+.hint-box.small { font-size: 12px; margin-top: 8px; }
+.prog { display: flex; flex-direction: column; gap: 8px; padding: 10px; height: 100%; box-sizing: border-box; }
+.prog-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.prog-main { display: flex; gap: 10px; min-height: 260px; flex: 1; }
+.code-editor { width: 100%; box-sizing: border-box; min-height: 260px; flex: 1; resize: vertical; padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--term-bg); color: var(--term-text); font: 13px/1.5 var(--mono); tab-size: 2; white-space: pre; }
+.code-editor.small { min-height: 90px; font-size: 12px; }
+.prog-side { width: 230px; flex: none; display: flex; flex-direction: column; gap: 6px; }
+.pin-grid { display: grid; grid-template-columns: 1fr; gap: 3px; }
+.pin { display: grid; grid-template-columns: 30px 1fr 44px; gap: 6px; align-items: center; padding: 3px 6px; border-radius: 6px; background: var(--panel-2); font-size: 12px; }
+.pin.hi { background: rgba(34, 197, 94, 0.18); }
+.pin b { font-family: var(--mono); }
+.prog-console { height: 130px; }
+.phone { display: flex; gap: 16px; padding: 12px; flex-wrap: wrap; }
+.phone-left { width: 300px; flex: none; }
+.phone-right { flex: 1; min-width: 240px; display: flex; flex-direction: column; gap: 6px; }
+.phone-screen { background: #a7f3d0; color: #064e3b; border: 3px solid #1f2937; border-radius: 8px; padding: 8px 10px; min-height: 86px; font-size: 13px; }
+.phone-screen.ringing { animation: ringflash 0.8s infinite alternate; }
+@keyframes ringflash { from { background: #a7f3d0; } to { background: #fde68a; } }
+.ps-top { display: flex; justify-content: space-between; font-size: 11px; opacity: 0.8; }
+.ps-main { font-weight: 700; margin: 6px 0 4px; }
+.ps-sub { font-size: 11px; }
+.phone-digits { margin: 8px 0; padding: 4px 10px; height: 34px; box-sizing: border-box; line-height: 26px; overflow: hidden; white-space: pre; border-radius: 6px; background: var(--panel-2); font-size: 18px; letter-spacing: 2px; }
+.phone-keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.phone-key { font-size: 16px; padding: 8px 0; justify-content: center; text-align: center; }
+.phone-heard { height: 180px; }
+.mib-main { display: flex; gap: 10px; margin-top: 10px; }
+.mib-tree { width: 220px; flex: none; max-height: 340px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); padding: 4px 0; font-size: 12px; }
+.mib-node { padding: 3px 6px; cursor: pointer; white-space: nowrap; }
+.mib-node:hover { background: var(--accent-soft); }
+.mib-node.on { background: var(--accent-soft); color: var(--accent-2); font-weight: 600; }
+.mib-node.head { cursor: default; color: var(--muted); font-weight: 600; }
+.mib-tw { display: inline-block; width: 14px; color: var(--muted); }
+.iot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.iot-card { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; background: var(--panel-2); }
+.iot-card .form { margin-top: 6px; }
+.rule-form { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding: 10px; border: 1px dashed var(--border-strong); border-radius: 10px; }
+.big-icon { display: block; }
+.prog-bar select { width: auto; min-width: 200px; }
+.iot-card .form { grid-template-columns: 1fr; gap: 3px; }
+.iot-card .form > label { margin-top: 4px; color: var(--muted); font-size: 12px; }
+#toolbar:hover { scrollbar-width: thin; }
+#toolbar:hover::-webkit-scrollbar { display: block; width: 4px; }
+#toolbar::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
+.tool.cat { padding: 4px 2px 3px; gap: 2px; }
+.tool.cat svg.di { width: 32px; height: 24px; }
