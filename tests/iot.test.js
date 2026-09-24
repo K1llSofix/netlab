@@ -63,6 +63,74 @@ test('Home Gateway: устройства регистрируются, IoT Monit
   assert.equal(n2.findByName('Siren').thing.state.on, true);
 });
 
+test('Правила IoT: условия И / ИЛИ, расписание по часам сервера, противоречащие правила не зацикливаются', () => {
+  const net = mkNet();
+  const gw = net.addDevice('homegw', { name: 'Home' });
+  const sw = net.addDevice('switch', { name: 'SW' });
+  link(net, gw, sw, gw.portIndex('Ethernet 1'));
+  const mk = (name, model) => { const d = net.addDevice('iot', { name, model }); link(net, d, sw); d.setDhcp(); d.setIotServer({ server: 'gateway' }); return d; };
+  const lamp = mk('Lamp', 'Smart Lamp');
+  const motion = mk('Motion', 'Motion Detector');
+  const smoke = mk('Smoke', 'Smoke Detector');
+  const siren = mk('Siren', 'Siren');
+  const fan = mk('Fan', 'Smart Fan');
+  net.runUntilIdle();
+  for (const d of [lamp, motion, smoke, siren, fan]) assert.equal(d.iotRt.state, 'registered', d.name);
+  const R = NL.iotRules;
+  assert.throws(() => R.normRule({ name: 'x', conds: [{ type: 'time', from: '25:00', to: '01:00' }], actions: [{ thing: 'Lamp', prop: 'level', value: 1 }] }), /ЧЧ:ММ/);
+  assert.equal(R.normRule({ name: 'old', cond: { thing: 'Motion', prop: 'detected', op: '=', value: true }, actions: [{ thing: 'Lamp', prop: 'level', value: 1 }] }).conds.length, 1, 'старый формат { cond } принимается');
+
+  gw.iotd.rules = [
+    // ИЛИ: дым или движение → сирена
+    R.normRule({ name: 'Тревога', match: 'any', conds: [{ thing: 'Smoke', prop: 'level', op: '>=', value: 50 }, { thing: 'Motion', prop: 'detected', op: '=', value: true }], actions: [{ thing: 'Siren', prop: 'on', value: true }] }),
+    // И + расписание: движение в 08:00–09:00 по будням → вентилятор
+    R.normRule({ name: 'Утро', match: 'all', conds: [{ thing: 'Motion', prop: 'detected', op: '=', value: true }, { type: 'time', from: '08:00', to: '09:00', days: [1, 2, 3, 4, 5] }], actions: [{ thing: 'Fan', prop: 'speed', value: 2 }] }),
+    // только расписание: 20:00–23:00 — свет вполсилы
+    R.normRule({ name: 'Вечер', conds: [{ type: 'time', from: '20:00', to: '23:00' }], actions: [{ thing: 'Lamp', prop: 'level', value: 1 }] }),
+  ];
+  gw.iotd.evaluate();
+  net.runUntilIdle();
+  assert.equal(siren.thing.state.on, false);
+  smoke.thingSet('level', 70);
+  net.runUntilIdle();
+  assert.equal(siren.thing.state.on, true, 'ИЛИ: хватило дыма');
+
+  // 1 марта 1993 — понедельник; часы 00:00. Движение ночью вентилятор не включает (И с расписанием)
+  assert.match(gw.iotd.clock(), /^00:0\d, пн$/);
+  motion.thingSet('detected', true);
+  net.runUntilIdle();
+  assert.equal(fan.thing.state.speed, 0);
+  gw.iotd.setClock('08:30');
+  net.runUntilIdle();
+  assert.equal(fan.thing.state.speed, 2, 'И: движение и утро буднего дня');
+
+  // расписание срабатывает само, по таймеру: 19:59 → через минуту свет
+  gw.iotd.setClock('19:59');
+  net.run(3000);
+  assert.equal(lamp.thing.state.level, 0);
+  net.run(3100);
+  assert.equal(lamp.thing.state.level, 1, 'в 20:00 правило «Вечер» включило свет');
+  assert.match(gw.iotd.clock(), /^20:00/);
+
+  // противоречащие правила: побеждает последнее, без бесконечного переключения
+  gw.iotd.rules.push(R.normRule({ name: 'Ярко', conds: [{ thing: 'Motion', prop: 'detected', op: '=', value: true }], actions: [{ thing: 'Lamp', prop: 'level', value: 2 }] }));
+  let sets = 0;
+  const off = net.on((t, e) => { if (t === 'log' && e.type === 'tx' && e.frame.payload && e.frame.payload.payload && e.frame.payload.payload.data && e.frame.payload.payload.data.iot === 'SET') sets++; });
+  gw.iotd.evaluate();
+  net.runUntilIdle(20000);
+  off();
+  assert.equal(lamp.thing.state.level, 2);
+  assert.ok(sets <= 2, 'команд SET: ' + sets);
+
+  // сохранение: правила в новом формате и часы сервера
+  const n2 = NL.Network.deserialize(JSON.parse(JSON.stringify(net.serialize())));
+  const g2 = n2.findByName('Home');
+  assert.equal(g2.iotd.rules[1].match, 'all');
+  assert.deepEqual(g2.iotd.rules[1].conds[1], { type: 'time', from: '08:00', to: '09:00', days: [1, 2, 3, 4, 5] });
+  assert.match(R.ruleText(g2.iotd.rules[0]), /Smoke\.level >= 50 ИЛИ Motion\.detected = true/);
+  assert.match(g2.iotd.clock(), /^20:0\d/);
+});
+
 test('IoT-сервер на Server-PT: удалённая регистрация, неверный пароль, выключенная служба', () => {
   const net = mkNet();
   const sw = net.addDevice('switch', { name: 'SW' });
@@ -122,7 +190,8 @@ test('MCU-PT: пины, компоненты на IoT-кабеле, програ
   const code = 'let n = 0;\nfunction setup() { pinMode(0, OUTPUT); Serial.println("start"); }\n' +
     'function loop() { if (digitalRead(1) === HIGH) { digitalWrite(0, HIGH); } delay(10); digitalWrite(0, LOW); n++; if (n === 3) print("pot", analogRead(A0)); delay(10); }';
   const h = RT.run(code, io);
-  await new Promise((r) => setTimeout(r, 150));
+  // ждём по условию, а не фиксированное время: под нагрузкой (параллельные тесты) цикл идёт медленнее
+  for (let i = 0; i < 150 && !logs.includes('pot 512'); i++) await new Promise((r) => setTimeout(r, 20));
   h.stop();
   assert.equal(logs[0], 'start');
   assert.ok(logs.includes('pot 512'), logs.join('|'));
@@ -158,4 +227,40 @@ test('SBC-PT: сетевой интерфейс — сетевая карта, �
   other.ping('10.0.0.1', { count: 1, onEvent: (e) => r.push(e.type) });
   net.runUntilIdle();
   assert.ok(r.includes('reply'));
+});
+
+test('Программирование на Python и в блоках: перевод в JavaScript и выполнение', async () => {
+  const RT = NL.scriptRt;
+  const py = 'from gpio import *\nfrom time import *\n\nhits = []\n\ndef blink(pin, times=2):\n    for i in range(times):\n        digitalWrite(pin, HIGH)\n        sleep(0.001)\n        digitalWrite(pin, LOW)\n    return times\n\ndef main():\n    pinMode(0, OUT)\n    n = blink(0, 3)\n    a, b = 1, 2\n    a, b = b, a\n    hits.append(n)\n    if n == 3 and "x" not in ["y"]:\n        print(f"n={n}", a, b, 7 // 2, len(hits), None is None)\n    elif n > 3:\n        print("много")\n    else:\n        pass\n\nif __name__ == "__main__":\n    main()\n';
+  const js = RT.py2js(py);
+  assert.match(js, /function blink\(pin, times=2\) \{/);
+  assert.match(js, /for \(i of __iter\(__range\(times\)\)\)/);
+  const logs = [];
+  const writes = [];
+  await new Promise((resolve) => RT.run(py, { read: () => 0, write: (p, v) => writes.push([p, v]), log: (t) => logs.push(t), error: (t) => logs.push('ERR ' + t), done: resolve }, 'python'));
+  assert.deepEqual(logs, ['n=3 2 1 3 1 true']);
+  assert.equal(writes.filter(([p, v]) => p === 'D0' && v === 1023).length, 3);
+  let err = '';
+  await new Promise((resolve) => RT.run('class A:\n    pass\n', { read: () => 0, write() {}, log() {}, error: (t) => { err = t; }, done: resolve }, 'python'));
+  assert.match(err, /классы Python здесь не поддерживаются/);
+  // блоки
+  const code = RT.blocksToJs({
+    setup: [{ t: 'pinMode', pin: 'D0', mode: 'OUTPUT' }],
+    loop: [{ t: 'if', src: 'analog', pin: 'A0', op: '>', value: 500, then: [{ t: 'digitalWrite', pin: 'D0', value: 'HIGH' }], else: [{ t: 'digitalWrite', pin: 'D0', value: 'LOW' }] },
+      { t: 'repeat', n: 2, body: [{ t: 'toggle', pin: 'D1' }] }, { t: 'set', name: 'n', src: 'add', value: 1 }, { t: 'delay', ms: 10 }],
+  });
+  assert.match(code, /if \(analogRead\("A0"\) > 500\) \{\n    digitalWrite\("D0", HIGH\);\n  \} else \{/);
+  assert.match(code, /let v_n = 0;/);
+  const w2 = [];
+  const hnd = RT.run(code, { read: (p) => (p === 'A0' ? 800 : 0), write: (p, v) => w2.push(p + '=' + v), log() {}, error: (t) => w2.push('ERR ' + t) });
+  for (let i = 0; i < 100 && !w2.includes('D0=1023'); i++) await new Promise((r) => setTimeout(r, 10));
+  hnd.stop();
+  assert.ok(w2.includes('D0=1023') && w2.includes('D1=1023'), w2.join(','));
+  // сохранение языка и блоков платы
+  const net = NL.Network.deserialize({ format: 'netlab', version: 2, devices: [], links: [] });
+  const mcu = net.addDevice('mcu', { name: 'M' });
+  mcu.program = { code: '', lang: 'blocks', blocks: { setup: [], loop: [{ t: 'delay', ms: 5 }] } };
+  const n2 = NL.Network.deserialize(JSON.parse(JSON.stringify(net.serialize())));
+  assert.equal(n2.findByName('M').program.lang, 'blocks');
+  assert.equal(n2.findByName('M').program.blocks.loop[0].ms, 5);
 });

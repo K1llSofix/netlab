@@ -6,8 +6,8 @@ NetLab — симулятор сетей в духе Cisco Packet Tracer. Ест
 
 Готовые файлы лежат в папке `dist/` после сборки (см. ниже):
 
-- `NetLab-Setup-1.2.0.exe` — установщик. Создаёт ярлыки на рабочем столе и в меню «Пуск», связывает файлы `.netlab` с NetLab: схема открывается двойным щелчком.
-- `NetLab-1.2.0-portable.exe` — версия без установки: один файл, можно носить на флешке.
+- `NetLab-Setup-1.3.0.exe` — установщик. Создаёт ярлыки на рабочем столе и в меню «Пуск», связывает файлы `.netlab` с NetLab: схема открывается двойным щелчком.
+- `NetLab-1.3.0-portable.exe` — версия без установки: один файл, можно носить на флешке.
 
 Особенности настольной версии:
 
@@ -32,13 +32,13 @@ NetLab — симулятор сетей в духе Cisco Packet Tracer. Ест
 
 **Как выпустить новую версию**
 
-1. Увеличьте `version` в `package.json` (например, `1.2.0` → `1.3.0`) и опишите изменения в `build/release-notes.md`. Разделы начинайте с `### `, пункты — с `- `. Этот текст пользователи увидят дважды: в окне с предложением обновиться и один раз после обновления в окне «Что нового в NetLab 1.2.0». Также он доступен в «Справка → Что нового в этой версии». При сборке текст попадает в `latest.yml`, поэтому программа покажет его, даже если описание Release на GitHub оставить пустым. Для красоты страницы на GitHub вставьте тот же текст в описание Release (`npm run release` сделает это сам).
+1. Увеличьте `version` в `package.json` (например, `1.3.0` → `1.4.0`) и опишите изменения в `build/release-notes.md`. Разделы начинайте с `### `, пункты — с `- `. Этот текст пользователи увидят дважды: в окне с предложением обновиться и один раз после обновления в окне «Что нового в NetLab 1.4.0». Также он доступен в «Справка → Что нового в этой версии». При сборке текст попадает в `latest.yml`, поэтому программа покажет его, даже если описание Release на GitHub оставить пустым. Для красоты страницы на GitHub вставьте тот же текст в описание Release (`npm run release` сделает это сам).
 2. Соберите: `npm run dist`.
-3. На GitHub создайте Release с тегом `v1.2.0` (буква `v` и номер версии) и приложите файлы из `dist/`:
-   - `NetLab-Setup-1.2.0.exe`
-   - `NetLab-Setup-1.2.0.exe.blockmap`
+3. На GitHub создайте Release с тегом `v1.4.0` (буква `v` и номер версии) и приложите файлы из `dist/`:
+   - `NetLab-Setup-1.4.0.exe`
+   - `NetLab-Setup-1.4.0.exe.blockmap`
    - `latest.yml`
-   - `NetLab-1.2.0-portable.exe`
+   - `NetLab-1.4.0-portable.exe`
 
    Опубликуйте Release (черновик программы не видят).
 
@@ -64,20 +64,22 @@ python -m http.server 8123
 
 | Категория | Модели |
 |---|---|
-| Маршрутизаторы | Cisco 2911 (3 × Gigabit, 4 слота EHWIC), Cisco 1941 (2 × Gigabit, 2 слота), Router-PT |
-| Коммутаторы | Cisco 2960-24TT (2-й уровень), Cisco 3560-24PS (3-й уровень: SVI, `ip routing`, routed-порты) |
+| Маршрутизаторы | Cisco 2911 (3 × Gigabit, 4 слота EHWIC), Cisco 1941 (2 × Gigabit, 2 слота), Cisco 1841, ISR 4331 (модули NIM-2T, NIM-ES2-4), Router-PT; модуль встроенного коммутатора HWIC-4ESW |
+| Коммутаторы | Cisco 2960-24TT (2-й уровень), Cisco 3560-24PS и Catalyst 3650-24PS (3-й уровень: SVI, `ip routing`, routed-порты) |
+| Безопасность | Межсетевой экран Cisco ASA 5506-X (свой CLI ASA) |
 | Концентраторы | Hub-PT |
-| Беспроводные | AccessPoint-PT, домашний маршрутизатор Linksys WRT300N (WAN по DHCP или статически, NAT, DHCP, Wi-Fi), домашний шлюз IoT Home Gateway DLC100 |
+| Беспроводные | AccessPoint-PT, домашний маршрутизатор Linksys WRT300N (WAN по DHCP или статически, NAT, DHCP, Wi-Fi, WPA2-Enterprise), домашний шлюз IoT Home Gateway DLC100, контроллер WLC 2504 и лёгкие точки LAP 3702i |
 | Конечные | PC-PT, Laptop-PT, Server-PT, Printer-PT, TabletPC-PT, Smartphone-PT, IP-телефон Cisco 7960, Bluetooth-колонка и гарнитура |
-| WAN | Cloud-PT — телефонная сеть с портами Modem и номерами (модем PT-HOST-NM-1AM в ПК) |
+| WAN | Cloud-PT — телефонная сеть с портами Modem и номерами (модем PT-HOST-NM-1AM в ПК) и сеть провайдера с портами Ethernet, DSL и Coaxial; DSL- и кабельный модемы; вышка сотовой связи 3G/4G; облако Multiuser-PT |
+| Управление | Сетевой контроллер Network Controller-PT (REST API, обнаружение устройств) |
 | IoT | Умная лампа, вентилятор, дверь, окно, сирена, кофеварка, датчики движения, температуры и дыма; платы MCU-PT и SBC-PT; компоненты: светодиод, зуммер, мотор, кнопка, переключатель, потенциометр, фото-, термодатчик, датчик движения |
 
 ### Окно устройства
 
 - **Физический вид.** Панель устройства со светодиодами портов, кнопка питания, список модулей с описанием. Модули ставятся перетаскиванием в слот и только при выключенном питании: HWIC-2T (Serial), HWIC-1GE-SFP, сетевые карты ПК и ноутбука (медь, оптика, Wi-Fi WMP300N / WPC300N).
 - **Настройка.** Боковое меню GLOBAL / ROUTING / SWITCHING / INTERFACE, как в CPT. На маршрутизаторе и коммутаторе каждое действие выполняется настоящей командой IOS, а внизу видны «Эквивалентные команды IOS». Сохранение и стирание NVRAM, экспорт и загрузка startup/running-config.
-- **Рабочий стол** ПК, ноутбука, планшета и сервера: IP Configuration, Command Prompt, Terminal (консоль через кабель), Web Browser, PC Wireless, Email, «Сообщения», Telnet/SSH Client, Traffic Generator, Text Editor, Firewall.
-- **Службы** сервера: HTTP (редактор страниц), DHCP, DNS, EMAIL (SMTP/POP3, домен, пользователи), TFTP.
+- **Рабочий стол** ПК, ноутбука, планшета и сервера: IP Configuration, Command Prompt, Terminal (консоль через кабель), Web Browser, PC Wireless, Email, «Сообщения», Telnet/SSH Client, Traffic Generator, Text Editor, Firewall, MIB Browser, NetFlow Collector, VPN, PPPoE Dialer, IP Communicator, IoT Monitor, IoX IDE, REST-клиент.
+- **Службы** сервера: HTTP (редактор страниц), DHCP, DNS, EMAIL (SMTP/POP3, домен, пользователи), TFTP, FTP, SYSLOG, NTP, AAA (RADIUS и TACACS+), IoT.
 - **CLI**: консоль Cisco IOS с `Press RETURN to get started`, паролями, `?` и Tab.
 - **Атрибуты**: MTBF, стоимость, питание, место в стойке, свои атрибуты. Общая стоимость сети показана в строке состояния.
 
@@ -94,9 +96,25 @@ python -m http.server 8123
 - **Программирование.** Платы MCU-PT и SBC-PT с пинами D0–D5 и A0–A3, IoT-кабель к компонентам, вкладка «Программирование»: JavaScript в стиле Arduino (`setup()`, `loop()`, `digitalWrite`, `analogRead`, `delay`), шаблоны, консоль. Программа выполняется в отдельном потоке без доступа к сети и файлам.
 - **IOx и IoX IDE.** `iox`, `interface VirtualPortGroup0`, `app-hosting appid …`, установка, запуск и остановка приложений; IoX IDE на компьютере загружает веб-приложение (package.yaml + index.html) на маршрутизатор через IOx Local Manager, а браузер открывает его по гостевому адресу.
 
+### Новое в 1.3: CCNA целиком, задания с проверкой
+
+- **Задания (Activity Wizard).** Меню «Задание» → «Мастер заданий»: запомните готовую схему как ответ и урезанную — как начальную, напишите инструкции (простая разметка: заголовки, списки, **жирный**, `команды`), отметьте пункты оценки и баллы. Пункты строятся сравнением ответа с заводскими настройками: строки running-config маршрутизаторов, коммутаторов и ASA (с учётом раздела `interface …`, `router …`), адреса и службы компьютеров и серверов, соединения между портами, состояние портов. Проверки связи — ping на копии схемы ученика («связь есть» или «связи быть не должно»). Таймер, режим показа результатов (всё, только процент, ничего) и пароль мастера. У ученика — панель задания: инструкции, таймер, «Проверить» и «Заново». Задание хранится в том же файле `.netlab`, ответ — в закодированном виде.
+- **Коммутация.** PVST+ и Rapid PVST+ (`spanning-tree vlan … root primary|priority`, свой корень у каждого VLAN), PortFast и BPDU Guard, DTP (`dynamic auto|desirable`, `nonegotiate`), VTP (server / client / transparent, домен, пароль, ревизия), EtherChannel (LACP и PAgP, `interface Port-channel`, `show etherchannel summary`).
+- **Резервирование шлюза.** HSRP (v1/v2), VRRP и GLBP: приоритет, `preempt`, `track`, виртуальный MAC, балансировка GLBP; `show standby|vrrp|glbp [brief]`.
+- **EIGRP и BGP.** EIGRP: соседи, составная метрика, DUAL (successor и feasible successor), `variance`, `passive-interface`, суммаризация. BGP: eBGP и iBGP (`update-source`, `next-hop-self`, `ebgp-multihop`), `network … mask`, AS_PATH, `show ip bgp [summary]`. Редистрибуция между RIP, OSPF, EIGRP, BGP, static и connected; OSPF: O IA, O E2, `area … range`.
+- **IPv6.** OSPFv3 (`ipv6 router ospf`, `ipv6 ospf … area`), RIPng, DHCPv6-сервер на маршрутизаторе (`ipv6 dhcp pool`, флаги M и O в RA) и режим DHCPv6 на компьютере (`ipconfig /renew6`).
+- **Безопасность.** AAA: служба RADIUS и TACACS+ на Server-PT, `aaa new-model`, `aaa authentication login`, `login authentication`, `test aaa group`. DHCP snooping, Dynamic ARP Inspection, 802.1X на портах коммутатора с проверкой на RADIUS. Zone-Based Firewall на маршрутизаторе. Межсетевой экран ASA 5506-X: `nameif`, `security-level`, таблица соединений, `access-group`, object NAT (PAT и static), `inspect icmp`, `dhcpd`. IPsec: обе фазы IKE видны в симуляции — Main Mode (6 сообщений: политика, ключи Диффи — Хеллмана, аутентификация) и Quick Mode (3), ошибки фазы 1 и фазы 2 различаются; `show crypto isakmp sa` (MM_SA_SETUP, MM_KEY_EXCH, QM_IDLE), `show crypto session`, `clear crypto isakmp`, `debug crypto isakmp|ipsec`.
+- **Беспроводные сети.** Контроллер WLC 2504 и точки LAP 3702i: поиск контроллера (в своей сети или по DHCP option 43), CAPWAP, WLAN в VLAN, клиенты и точки в окне контроллера. WPA2-Enterprise с проверкой пользователя на RADIUS (на WLC и WRT300N).
+- **WAN.** Облако провайдера с портами DSL и Coaxial, DSL- и кабельный модемы, коаксиальный кабель, вышка 3G/4G для смартфонов. Маршрутизаторы 1841 и ISR 4331, коммутатор 3650-24PS, модуль HWIC-4ESW (`interface vlan` на маршрутизаторе, `show vlan-switch`).
+- **Телефония.** Удержание и возврат вызова, слепой перевод на другой номер; вызовы между CME по `dial-peer voice N voip` (`destination-pattern`, `session target ipv4:`) — сигнализация H.323, голос напрямую между телефонами; `show dial-peer voice summary`, `show call active voice brief`.
+- **IoT и программирование.** Правила IoT с несколькими условиями «И» / «ИЛИ» и расписанием по часам сервера (дни недели, интервал времени); противоречащие правила не переключают устройство бесконечно. Программы плат на Python (подмножество: `def`, `while`, `for … in range`, списки) и блоками — без знания языка.
+- **Управление.** Журнал IOS и Syslog (`logging host`, `logging trap`, `service timestamps`), NTP (`ntp server`, `ntp master`, аутентификация), FTP-сервер и `copy running-config ftp:`, команды `debug`.
+- **Инструменты.** Сложный PDU (ICMP / TCP / UDP с портами, TTL, размером, периодичностью) и сценарии в режиме симуляции; физические расстояния (масштаб схемы, предельная длина кабелей, дальность Wi-Fi и вышки в метрах); сетевой контроллер с REST API (`/api/v1/ticket`, `network-device`, `host`, `discovery`) и программа «REST-клиент»; многопользовательский режим — облако Multiuser-PT соединяет схемы двух копий NetLab по сети.
+- **Удобство.** Перед открытием другой схемы, созданием новой или примером NetLab предлагает сохранить несохранённую.
+
 ### Кабели
 
-Автоматически, консольный, медный прямой, медный перекрёстный, оптоволокно, Serial DCE/DTE. Меню порта показывает только подходящие порты. Неверный кабель или отсутствие `clock rate` на стороне DCE даёт красные индикаторы и подсказку с причиной. У Serial-канала сторона DCE помечена часами. Wi-Fi-связи рисуются пунктиром; радиус точки доступа виден при её выделении.
+Автоматически, консольный, медный прямой, медный перекрёстный, оптоволокно, Serial DCE/DTE, телефонный, коаксиальный, IoT. Меню порта показывает только подходящие порты. Неверный кабель или отсутствие `clock rate` на стороне DCE даёт красные индикаторы и подсказку с причиной. У Serial-канала сторона DCE помечена часами. Wi-Fi-связи рисуются пунктиром; радиус точки доступа виден при её выделении.
 
 ### Протоколы и функции
 
@@ -109,7 +127,7 @@ python -m http.server 8123
 - Командная строка ПК: `ping`, `tracert`, `ipconfig`, `arp`, `nslookup`, `netstat`, `telnet`, `ssh -l`.
 - Инструменты: инспектор (таблицы ARP, MAC, маршрутизации, NAT, DHCP, CDP, OSPF, сводка портов), фигуры и заметки, перезапуск всех устройств, ускорение времени.
 - Два режима: «Реальное время» и «Симуляция». В симуляции видно, *почему* устройство поступило так, а не иначе; фильтры протоколов включают TCP, HTTP, SMTP, POP3, Telnet, SSH, TFTP.
-- 27 готовых примеров: VLAN, STP, DHCP/DNS/веб, домашний Wi-Fi, NAT, ACL, OSPF, Serial PPP + RIP, консоль/Telnet/SSH, 3560, port-security, почта двух доменов, IPv6, SNMP и NetFlow, GRE, IPsec и Easy VPN, PPPoE, Dial-up, IP-телефония, Bluetooth, умный дом, плата MCU, IOx.
+- 38 готовых примеров: VLAN, STP, DHCP/DNS/веб, домашний Wi-Fi, NAT, ACL, OSPF, Serial PPP + RIP, консоль/Telnet/SSH, 3560, port-security, почта двух доменов, IPv6, SNMP и NetFlow, GRE, IPsec и Easy VPN, PPPoE, Dial-up, IP-телефония, Bluetooth, умный дом, плата MCU, IOx; новые в 1.3 — VTP, EtherChannel и PVST, HSRP, EIGRP и BGP, OSPFv3 и DHCPv6, ASA, WLC и LAP, DSL / кабель / 4G, сетевой контроллер, телефония двух офисов, Syslog / NTP / FTP и готовое задание с проверкой.
 
 ### Как в настоящем IOS
 
@@ -172,7 +190,7 @@ NODE_USE_ENV_PROXY=1 node node_modules/electron/install.js
 
 ## Тесты
 
-Ядро симулятора не зависит от браузера и покрыто автотестами (117 тестов):
+Ядро симулятора не зависит от браузера и покрыто автотестами (168 тестов):
 
 ```bash
 npm test
@@ -180,8 +198,9 @@ npm test
 
 - `tests/engine.test.js` — связность, маршрутизация, VLAN, STP, DHCP, DNS, «Сообщения», CLI, сохранение;
 - `tests/features.test.js` — кабели и модули, Serial, Wi-Fi, WRT300N, TCP, HTTP, почта с несколькими получателями и двумя доменами, брандмауэр, генератор трафика, SVI и Telnet, SSH, 3560, port-security, ACL, NAT, RIP, OSPF, NVRAM, пароли, CDP, TFTP, `?` и Tab, совпадение running-config после повторного применения;
-- `tests/examples.test.js`, `tests/examples-ext.test.js` — каждый пример собирается, конфигурация сохранена, и в нём работает то, что обещано в описании;
-- `tests/ipv6.test.js`, `tests/snmp-netflow.test.js`, `tests/vpn-pppoe.test.js`, `tests/voip.test.js`, `tests/bluetooth.test.js`, `tests/iot.test.js`, `tests/iox.test.js` — новые подсистемы: IPv6 и SLAAC, SNMP и NetFlow, GRE, IPsec, Easy VPN, PPPoE, Dial-up, CME и IP-телефоны, PoE и voice VLAN, Bluetooth, IoT-сервер и правила, программы плат, IOx.
+- `tests/examples.test.js`, `tests/examples-ext.test.js`, `tests/examples-13.test.js` — каждый пример собирается, конфигурация сохранена, и в нём работает то, что обещано в описании;
+- `tests/ipv6.test.js`, `tests/snmp-netflow.test.js`, `tests/vpn-pppoe.test.js`, `tests/voip.test.js`, `tests/bluetooth.test.js`, `tests/iot.test.js`, `tests/iox.test.js` — новые подсистемы: IPv6 и SLAAC, SNMP и NetFlow, GRE, IPsec, Easy VPN, PPPoE, Dial-up, CME и IP-телефоны, PoE и voice VLAN, Bluetooth, IoT-сервер и правила, программы плат, IOx;
+- `tests/mgmt.test.js`, `tests/l2.test.js`, `tests/fhrp.test.js`, `tests/routing2.test.js`, `tests/routing6.test.js`, `tests/security.test.js`, `tests/wireless.test.js`, `tests/wan.test.js`, `tests/pdu.test.js`, `tests/netctrl.test.js`, `tests/multiuser.test.js`, `tests/voip2.test.js`, `tests/activity.test.js` — подсистемы 1.3: Syslog / NTP / FTP / debug, PVST, DTP, VTP, EtherChannel, HSRP / VRRP / GLBP, EIGRP, BGP и редистрибуция, OSPFv3 / RIPng / DHCPv6, AAA, DHCP snooping, DAI, 802.1X, ZBF, ASA, WLC и LAP, модемы и вышка, новые модели, сложный PDU и физические расстояния, REST API контроллера, многопользовательский режим, удержание / перевод / dial-peer, задания с проверкой; фазы IKE — в `tests/vpn-pppoe.test.js`, правила IoT с «И» / «ИЛИ» и расписанием, Python и блоки — в `tests/iot.test.js`.
 
 Самопроверка настольной версии запускает Electron и проверяет в реальном окне загрузку примера, ping, запуск программы платы в отдельном потоке (без доступа к сети), сохранение и открытие файла:
 
@@ -202,7 +221,7 @@ node tests/smoke-update.js dist/win-unpacked/NetLab.exe upd-test
 ## Структура
 
 ```
-electron/             настольная оболочка: окно, меню, диалоги файлов (main.js, preload.js), обновления (updater.js)
+electron/             настольная оболочка: окно, меню, диалоги файлов (main.js, preload.js), обновления (updater.js), многопользовательский режим (multiuser.js)
 build/                иконка приложения
 index.html            страница приложения
 css/app.css           оформление (тёмная и светлая темы)
@@ -237,6 +256,22 @@ js/core/              ядро симулятора, без DOM
   iot.js              умные устройства, IoT-сервер, Home Gateway, платы и компоненты
   script-rt.js        среда выполнения программ плат (setup/loop, пины, delay)
   iox.js              IOx: app-hosting, IOx Local Manager
+  mgmt.js             журнал IOS, Syslog, NTP, FTP, debug
+  l2ext.js            PVST / Rapid PVST, PortFast, BPDU Guard, DTP, VTP, EtherChannel
+  fhrp.js             HSRP, VRRP, GLBP
+  routing2.js         EIGRP, BGP, редистрибуция, межзональные и внешние маршруты OSPF
+  routing2-cli.js     команды IOS для EIGRP, BGP и редистрибуции
+  routing6.js         OSPFv3, RIPng, DHCPv6
+  voip2.js            удержание и перевод вызова, dial-peer и H.323 между CME
+  aaa.js              AAA: RADIUS, TACACS+, списки методов входа
+  l2sec.js            DHCP snooping, Dynamic ARP Inspection, 802.1X
+  zbf.js, asa.js      Zone-Based Firewall; межсетевой экран ASA 5506-X и его CLI
+  wlc.js              контроллер WLC 2504, точки LAP, CAPWAP, WPA2-Enterprise
+  wan.js              облако провайдера (DSL, коаксиал), модемы, вышка 3G/4G, модели 1841 / 4331 / 3650, HWIC-4ESW
+  pdu.js, physical.js сложный PDU и сценарии; физические расстояния
+  netctrl.js          сетевой контроллер и REST API
+  multiuser.js        облако Multiuser-PT
+  activity.js         задания: пункты оценки, проверка, проверки связи
 js/ui/                интерфейс
   script-worker.js    отдельный поток для программ плат (без сети)
   dw-*.js             вкладки окна устройства (физический вид, настройка, рабочий стол, службы, атрибуты)
@@ -245,11 +280,15 @@ js/ui/                интерфейс
   workspace.js        схема, инструменты, кабели
   terminal.js         терминал (CLI, Command Prompt, Terminal)
   updates.js          окно обновлений (предложение, загрузка, установка)
+  pdu-complex.js      окно «Сложный PDU» и панель сценариев
+  multiuser.js        окно многопользовательского режима
+  activity.js         мастер заданий, панель задания, результат проверки
+  examples*.js        готовые примеры
 tests/                автотесты ядра, примеров и самопроверка настольной версии (smoke.js)
 ```
 
 ## Чего нет (пока)
 
-EIGRP, BGP, OSPFv3 и маршрутизация IPv6 динамическими протоколами, DHCPv6, EtherChannel, VTP, AAA/RADIUS/TACACS, dial-peer между несколькими CME, Python на платах, сотовые сети и спутник из Packet Tracer в NetLab не реализованы.
+Спутниковая связь, IS-IS, MPLS, SIP-телефония и CUCM, VPN на ASA (AnyConnect), файлы заданий Packet Tracer (`.pka`) в NetLab не реализованы — задания NetLab делаются своим мастером и хранятся в `.netlab`.
 
-Упрощено: IKE сводится к одному обмену (но проверяет ключ, политики, transform-set и зеркальность ACL); SCCP передаёт только события регистрации и вызова; RTP-«голос» — это текстовые реплики; приложения IOx — статические веб-сайты.
+Упрощено: SCCP и H.323 передают только события регистрации и вызова; RTP-«голос» — это текстовые реплики; приложения IOx — статические веб-сайты; Python на платах — учебное подмножество языка; в заданиях устройства сравниваются по имени, а конфигурация — по строкам running-config.

@@ -23,4 +23,14 @@ contextBridge.exposeInMainWorld('netlabDesktop', {
   openUpdatePage: () => ipcRenderer.invoke('update:open-page'),
   installUpdate: () => ipcRenderer.send('update:install'),
   onUpdate: (cb) => ipcRenderer.on('update:event', (_e, ev) => cb(ev)),
+  // многопользовательский режим (TCP между копиями NetLab)
+  mu: {
+    listen: (o) => ipcRenderer.invoke('mu:listen', o),
+    stop: () => ipcRenderer.invoke('mu:stop'),
+    connect: (o) => ipcRenderer.invoke('mu:connect', o),
+    disconnect: (id) => ipcRenderer.invoke('mu:disconnect', id),
+    status: () => ipcRenderer.invoke('mu:status'),
+    send: (msg, to) => ipcRenderer.send('mu:send', { msg, to }),
+    onEvent: (cb) => ipcRenderer.on('mu:event', (_e, ev) => cb(ev)),
+  },
 });

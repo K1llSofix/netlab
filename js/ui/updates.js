@@ -150,10 +150,10 @@
   /** Перед перезапуском — сохранить схему, если она открыта из файла и изменена. */
   async function install() {
     const app = S.app;
-    if (app.dirty && app.filePath) {
+    if (app.hasUnsaved ? app.hasUnsaved() : app.dirty && app.filePath) {
       const choice = await new Promise((resolve) => UI.modal({
         title: 'Сохранить схему перед обновлением?',
-        body: 'В «' + app.fileName + '» есть несохранённые изменения. Они в любом случае останутся в автосохранении NetLab.',
+        body: (app.fileName ? 'В «' + app.fileName + '» есть несохранённые изменения.' : 'Схема ещё не сохранена в файл.') + ' Она в любом случае останется в автосохранении NetLab и откроется после обновления.',
         dismissable: false,
         onCancel: () => resolve('cancel'),
         actions: [

@@ -35,7 +35,8 @@
       if (other) throw new Error('Пул с именем «' + name + '» уже есть');
       const prev = this.pools.find((x) => x.name === (replaceName || name));
       const tftp = p.tftp !== undefined ? p.tftp : prev ? prev.tftp : null;
-      const pool = { name, network, mask: p.mask, start, end, gateway: p.gateway == null ? null : p.gateway, dns: p.dns == null ? null : p.dns, tftp: tftp == null ? null : tftp };
+      const wlc = p.wlc !== undefined ? p.wlc : prev ? prev.wlc : null;
+      const pool = { name, network, mask: p.mask, start, end, gateway: p.gateway == null ? null : p.gateway, dns: p.dns == null ? null : p.dns, tftp: tftp == null ? null : tftp, wlc: wlc == null ? null : wlc };
       const idx = this.pools.findIndex((x) => x.name === (replaceName || name));
       if (idx >= 0) this.pools[idx] = pool;
       else this.pools.push(pool);
@@ -145,6 +146,7 @@
         router: ip != null ? pool.gateway : null, dns: ip != null ? pool.dns : null, serverId, giaddr: d.giaddr || 0,
       };
       if (ip != null && pool.tftp != null) data.tftp = pool.tftp; // option 150
+      if (ip != null && pool.wlc != null) data.wlc = pool.wlc; // option 43 — адрес контроллера WLC
       const why = op === 'OFFER' ? 'DHCP Offer: предлагаю адрес ' + U.ipStr(ip)
         : op === 'ACK' ? 'DHCP Ack: адрес ' + U.ipStr(ip) + ' закреплён за ' + d.chaddr
           : 'DHCP Nak: запрошенный адрес недоступен';
@@ -162,6 +164,7 @@
           name: p.name, network: U.ipStr(p.network), mask: U.ipStr(p.mask), start: U.ipStr(p.start), end: U.ipStr(p.end),
           gateway: p.gateway == null ? null : U.ipStr(p.gateway), dns: p.dns == null ? null : U.ipStr(p.dns),
           tftp: p.tftp == null ? null : U.ipStr(p.tftp),
+          wlc: p.wlc == null ? undefined : U.ipStr(p.wlc),
         })),
         excluded: this.excluded.map((r) => ({ from: U.ipStr(r.from), to: U.ipStr(r.to) })),
         leases: [...this.leases.entries()].map(([mac, l]) => ({ mac, ip: U.ipStr(l.ip), pool: l.pool })),
@@ -174,7 +177,7 @@
       this.pools = [];
       for (const p of c.pools || []) {
         try {
-          this.setPool({ name: p.name, start: U.parseIp(p.start), end: U.parseIp(p.end), mask: U.parseMask(p.mask), gateway: p.gateway ? U.parseIp(p.gateway) : null, dns: p.dns ? U.parseIp(p.dns) : null, tftp: p.tftp ? U.parseIp(p.tftp) : null });
+          this.setPool({ name: p.name, start: U.parseIp(p.start), end: U.parseIp(p.end), mask: U.parseMask(p.mask), gateway: p.gateway ? U.parseIp(p.gateway) : null, dns: p.dns ? U.parseIp(p.dns) : null, tftp: p.tftp ? U.parseIp(p.tftp) : null, wlc: p.wlc ? U.parseIp(p.wlc) : null });
         } catch (e) { /* пропускаем испорченный пул */ }
       }
       this.excluded = [];

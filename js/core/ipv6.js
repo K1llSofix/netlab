@@ -440,8 +440,10 @@
     if (!this.forwarding6() || !on(f)) return;
     const prefixes = f.v6.addrs.filter((a) => a.plen === 64 && a.origin !== 'slaac').map((a) => ({ net: ip6.net(a.addr, 64), plen: 64 }));
     const target = dst || ip6.ALL_NODES;
-    const ra = P.ipv6(this.ll6(f), target, 'ICMPv6', { type: 'ra', mac: this.ifaceMac(f), prefixes }, 255);
-    const why = 'Router Advertisement: я маршрутизатор' + (prefixes.length ? ', префикс ' + prefixes.map((x) => ip6.cidr(x.net, 64, true)).join(', ') : '');
+    const r = f.v6r || {};
+    const ra = P.ipv6(this.ll6(f), target, 'ICMPv6', { type: 'ra', mac: this.ifaceMac(f), prefixes, managed: !!r.ndM, other: !!r.ndO }, 255);
+    const why = 'Router Advertisement: я маршрутизатор' + (prefixes.length ? ', префикс ' + prefixes.map((x) => ip6.cidr(x.net, 64, true)).join(', ') : '') +
+      (r.ndM ? ', адрес — у DHCPv6 (флаг M)' : r.ndO ? ', DNS — у DHCPv6 (флаг O)' : '');
     if (ip6.isMulticast(target)) this.sendFrame6(f, ip6.mcastMac(target), ra, why);
     else this.resolve6(f, target, ra, { why });
   };
@@ -572,7 +574,7 @@
     if (!this.ifaces) return;
     // после включения питания ПК с автонастройкой снова спрашивают маршрутизатор
     for (const f of this.ifaces) {
-      if (f.v6) { f.v6.addrs = f.v6.addrs.filter((a) => a.origin !== 'slaac'); f.v6.raRouter = null; }
+      if (f.v6) { f.v6.addrs = f.v6.addrs.filter((a) => a.origin !== 'slaac' && a.origin !== 'dhcp'); f.v6.raRouter = null; }
       if (on(f) && f.v6.autoconfig) this.timer(5, () => this.sendRS6(f));
     }
   });
@@ -599,7 +601,7 @@
       if (!f.v6 || !on(f)) return null;
       return {
         enabled: !!f.v6.enabled, autoconfig: !!f.v6.autoconfig, ll: f.v6.llManual != null ? ip6.str(f.v6.llManual) : null,
-        addrs: f.v6.addrs.filter((a) => a.origin !== 'slaac').map((a) => ({ addr: ip6.str(a.addr), plen: a.plen, eui: !!a.eui })),
+        addrs: f.v6.addrs.filter((a) => a.origin !== 'slaac' && a.origin !== 'dhcp').map((a) => ({ addr: ip6.str(a.addr), plen: a.plen, eui: !!a.eui })),
       };
     },
     load(f, d) {
@@ -667,12 +669,12 @@
     protocols: { ICMPv6: { label: 'ICMPv6', color: '#2563eb' }, NDP: { label: 'NDP (IPv6)', color: '#d97706' } },
     ethertypes: { IPv6: '0x86DD IPv6' },
     classify(f) {
-      if (f.type !== 'IPv6') return null;
+      if (f.type !== 'IPv6' || (f.payload && f.payload.next !== 'ICMPv6')) return null;
       const m = f.payload && f.payload.payload;
       return m && (m.type === 'ns' || m.type === 'na' || m.type === 'rs' || m.type === 'ra') ? 'NDP' : 'ICMPv6';
     },
     summary(f) {
-      if (f.type !== 'IPv6') return null;
+      if (f.type !== 'IPv6' || f.payload.next !== 'ICMPv6') return null;
       const p = f.payload;
       const m = p.payload || {};
       const route = ip6.str(p.src) + ' → ' + ip6.str(p.dst);
@@ -682,7 +684,7 @@
       return (ICMP6[m.type] || ('IPv6 ' + p.next)) + ', ' + route;
     },
     layers(f) {
-      if (f.type !== 'IPv6') return null;
+      if (f.type !== 'IPv6' || f.payload.next !== 'ICMPv6') return null;
       const p = f.payload;
       const m = p.payload || {};
       const out = [P.l2Layer(f)];
@@ -694,6 +696,7 @@
       if (m.mac) fields.push(['MAC-адрес (опция)', m.mac]);
       if (m.type === 'na') fields.push(['Флаг Router', m.router ? 'да' : 'нет']);
       if (m.prefixes) fields.push(['Префиксы', m.prefixes.map((x) => ip6.cidr(x.net, x.plen)).join(', ') || '—']);
+      if (m.type === 'ra') fields.push(['Флаги M / O', (m.managed ? '1' : '0') + ' / ' + (m.other ? '1' : '0') + (m.managed ? ' — адрес выдаёт DHCPv6' : m.other ? ' — DNS выдаёт DHCPv6' : ' — SLAAC')]);
       if (m.original) fields.push(['Исходный пакет', ip6.str(m.original.src) + ' → ' + ip6.str(m.original.dst)]);
       out.push({ title: 'ICMPv6', fields });
       return out;
@@ -762,7 +765,7 @@
       each((f) => dev.addIp6(f, pr.addr, pr.plen, eui));
       return true;
     }
-    if (C.kw(a[1], 'nd', 2) || C.kw(a[1], 'ospf', 2) || C.kw(a[1], 'rip', 2)) return true;
+    if (C.kw(a[1], 'nd', 2) || C.kw(a[1], 'ospf', 2) || C.kw(a[1], 'rip', 2) || C.kw(a[1], 'dhcp', 2)) return false;
     C.invalid(io, a[1]);
     return true;
   });
@@ -773,7 +776,7 @@
     const L = [];
     if (f.v6.llManual != null) L.push(' ipv6 address ' + up(f.v6.llManual) + ' link-local');
     for (const a of f.v6.addrs) {
-      if (a.origin === 'slaac') continue;
+      if (a.origin === 'slaac' || a.origin === 'dhcp') continue;
       L.push(' ipv6 address ' + (a.eui ? ip6.cidr(a.addr, 64, true) + ' eui-64' : up(a.addr) + '/' + a.plen));
     }
     if (f.v6.autoconfig) L.push(' ipv6 address autoconfig');
@@ -859,7 +862,7 @@
   H.ipconfig.push((dev, f, all, io) => {
     if (!on(f)) return;
     const w = (s) => io.out(s);
-    for (const a of f.v6.addrs) w('   IPv6-адрес. . . . . . . . . . . . : ' + ip6.str(a.addr) + (a.origin === 'slaac' ? ' (автонастройка)' : ''));
+    for (const a of f.v6.addrs) w('   IPv6-адрес. . . . . . . . . . . . : ' + ip6.str(a.addr) + (a.origin === 'slaac' ? ' (автонастройка)' : a.origin === 'dhcp' ? ' (DHCPv6)' : ''));
     w('   Локальный IPv6-адрес канала . . . : ' + ip6.str(dev.ll6(f)) + '%' + f.id);
     const gw = dev.gateway6();
     if (gw) w('   Основной шлюз (IPv6). . . . . . . : ' + ip6.str(gw.addr) + (ip6.isLinkLocal(gw.addr) ? '%' + f.id : ''));
@@ -870,12 +873,13 @@
     io.out('Настройка протокола IPv6');
     io.out('');
     if (!f || !on(f)) { io.out('IPv6 выключен.'); return null; }
-    io.out('   Режим . . . . . . . . . . . . . . : ' + (f.v6.autoconfig ? 'автоматически (SLAAC)' : 'статически'));
+    io.out('   Режим . . . . . . . . . . . . . . : ' + (f.v6.dhcp ? 'автоматически (DHCPv6)' : f.v6.autoconfig ? 'автонастройка (SLAAC)' : 'статически'));
     io.out('   Локальный IPv6-адрес канала . . . : ' + ip6.str(dev.ll6(f)));
     for (const a of f.v6.addrs) io.out('   IPv6-адрес. . . . . . . . . . . . : ' + ip6.str(a.addr) + '/' + a.plen);
     const gw = dev.gateway6();
     io.out('   Основной шлюз (IPv6). . . . . . . : ' + (gw ? ip6.str(gw.addr) : ''));
-    if (f.v6.autoconfig && !gw) io.out('Маршрутизатор IPv6 не найден: нет ответа на Router Solicitation (нужен ipv6 unicast-routing на маршрутизаторе).', 'hint');
+    for (const fn of NS.ip6ConfigLines || []) fn(dev, f, io);
+    if ((f.v6.autoconfig || f.v6.dhcp) && !gw) io.out('Маршрутизатор IPv6 не найден: нет ответа на Router Solicitation (нужен ipv6 unicast-routing на маршрутизаторе).', 'hint');
     return null;
   };
   H.help.push('  ipv6config                                               настройки IPv6');

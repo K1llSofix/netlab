@@ -346,7 +346,8 @@ test('access-порт отбрасывает тегированные кадры
   const s1 = net.addDevice('switch');
   const s2 = net.addDevice('switch');
   link(net, s1, s2, 24, 24);
-  s1.setPortMode(24, 'trunk'); // на другой стороне access — несогласованность
+  s1.setPortMode(24, 'trunk');
+  s2.setPortMode(24, 'access'); // на другой стороне статический access — несогласованность (без него DTP согласовал бы транк)
   const a = pc(net, 'A', '10.0.0.1/24');
   const b = pc(net, 'B', '10.0.0.2/24');
   link(net, a, s1, 0, 0);

@@ -53,17 +53,18 @@
         return [phys, cfg, attr];
       case 'router':
       case 'switch':
+      case 'asa':
         return [phys, cfg, cliTab(app, id), attr];
       default:
         return [phys, cfg, attr];
     }
   }
 
-  const SIZES = { smartphone: [760, 600], ipphone: [780, 600], iot: [720, 560], mcu: [900, 680], sbc: [900, 680], iotcomp: [640, 500], cloud: [720, 560], homegw: [780, 600], btspeaker: [640, 500], btheadset: [640, 500], pc: [760, 600], laptop: [760, 600], tablet: [760, 600], server: [800, 640], printer: [700, 540], router: [860, 660], switch: [860, 660], hub: [680, 520], ap: [720, 560], wrouter: [780, 600] };
+  const SIZES = { smartphone: [760, 600], ipphone: [780, 600], iot: [720, 560], mcu: [900, 680], sbc: [900, 680], iotcomp: [640, 500], cloud: [720, 560], homegw: [780, 600], btspeaker: [640, 500], btheadset: [640, 500], pc: [760, 600], laptop: [760, 600], tablet: [760, 600], server: [800, 640], printer: [700, 540], router: [860, 660], switch: [860, 660], asa: [900, 680], hub: [680, 520], ap: [720, 560], wrouter: [780, 600] };
 
   /** Какую вкладку открыть по умолчанию (двойной щелчок): как в Packet Tracer — «Настройка»/«Рабочий стол»/CLI. */
   function defaultTab(dev) {
-    if (dev.type === 'router' || dev.type === 'switch') return 'cli';
+    if (dev.type === 'router' || dev.type === 'switch' || dev.type === 'asa') return 'cli';
     if (dev.type === 'pc' || dev.type === 'laptop' || dev.type === 'tablet' || dev.type === 'server' || dev.type === 'smartphone') return 'desktop';
     const own = { ipphone: 'phone', iot: 'thing', mcu: 'program', sbc: 'program', iotcomp: 'comp' }[dev.type];
     if (own) return own;

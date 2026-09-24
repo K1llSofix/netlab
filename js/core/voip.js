@@ -151,7 +151,7 @@
           }
           break;
         default:
-          return;
+          if (!SccpClient.onExtMsg || !SccpClient.onExtMsg(this, d)) return;
       }
       this.emit();
     }
@@ -447,7 +447,11 @@
     };
     accept.cme = true;
     dev.tcp.listen(c.port || SCCP_PORT, accept);
+    for (const hk of CME_HOOKS.listen) hk(dev);
   }
+
+  /** Расширения CME (voip2.js): msg(dev, conn, d, reg) → true — обработано; dialRemote; drop(dev, call); listen(dev). */
+  const CME_HOOKS = { msg: [], drop: [], listen: [], dialRemote: null };
 
   IpNode.hooks.bind.push(function () { if (this.type === 'router') cmeListen(this); });
 
@@ -508,11 +512,13 @@
     if (d.sccp === 'Register') { cmeRegister(dev, conn, d); return; }
     const reg = regOf(dev, conn);
     if (!reg) return;
+    for (const hk of CME_HOOKS.msg) if (hk(dev, conn, d, reg)) return;
     const c = dev.cme;
     const rt = dev.cmeRt;
     if (d.sccp === 'Dial') {
       const number = String(d.number);
       const tag = dnByNumber(c, number);
+      if (tag == null && CME_HOOKS.dialRemote && CME_HOOKS.dialRemote(dev, conn, reg, number)) return;
       if (tag == null) { conn.send({ sccp: 'Error', text: 'Номер ' + number + ' не существует (нет ephone-dn с таким number)' }); return; }
       const to = regByDn(dev, tag);
       if (!to) { conn.send({ sccp: 'Busy', text: 'Абонент ' + number + ' не зарегистрирован' }); return; }
@@ -551,6 +557,7 @@
     for (const call of [...dev.cmeRt.calls.values()]) {
       if (call.a !== reg.mac && call.b !== reg.mac) continue;
       dev.cmeRt.calls.delete(call.id);
+      for (const hk of CME_HOOKS.drop) hk(dev, call);
       const other = dev.cmeRt.regs.get(call.a === reg.mac ? call.b : call.a);
       if (other) other.conn.send({ sccp: 'CallEnd', callId: call.id, text: 'Связь с собеседником потеряна' });
     }
@@ -803,7 +810,6 @@
       s.ctx = n;
       return true;
     }
-    if (C.kw(a[0], 'dial-peer', 6)) { io.out('% dial-peer между разными CME в NetLab не поддерживается'); return true; }
     return false;
   });
 
@@ -912,7 +918,7 @@
         io.out('ephone-' + n + '[' + (Number(n) - 1) + '] Mac:' + (e.mac ? macDots(e.mac) : 'не задан') + ' TCP socket:[' + (reg ? n : -1) + '] activeLine:' + (call ? 1 : 0) + ' ' + (reg ? 'REGISTERED in SCCP ver 12/12' : 'UNREGISTERED'));
         io.out('mediaActive:' + (call && call.state === 'connected' ? 1 : 0) + ' offhook:' + (call ? 1 : 0) + ' ringing:' + (call && call.state === 'ringing' && call.b === e.mac ? 1 : 0) + ' reset:0 debug:0');
         io.out('IP:' + (reg ? U.ipStr(reg.ip) : '0.0.0.0') + ' * ' + e.type + '  keepalive ' + (reg ? 1 : 0) + ' max_line 6');
-        for (const l of linesOf(c, e)) io.out('button ' + l.button + ': dn ' + l.dn + '  number ' + l.number + ' CH1   ' + (call ? (call.state === 'connected' ? 'CONNECTED' : call.b === e.mac ? 'RINGING' : 'ALERTING') : 'IDLE'));
+        for (const l of linesOf(c, e)) io.out('button ' + l.button + ': dn ' + l.dn + '  number ' + l.number + ' CH1   ' + (call ? (call.state === 'connected' ? (call.held && call.held[e.mac] ? 'HOLD' : 'CONNECTED') : call.state === 'ringing' && call.b === e.mac ? 'RINGING' : 'ALERTING') : 'IDLE'));
         io.out('');
       }
       if (!list.length) io.out('(телефонов нет: настройте telephony-service и подключите IP-телефоны)');
@@ -927,7 +933,7 @@
         const eph = used[n];
         const reg = eph ? rt.regs.get(c.ephones[eph].mac) : null;
         const call = reg ? callOf(dev, reg) : null;
-        io.out(C.pad(n, 9) + C.pad(d.number || '-', 17) + C.pad(d.name || '', 21) + C.pad(!reg ? 'DOWN' : call ? (call.state === 'connected' ? 'CONNECTED' : 'RINGING') : 'IDLE', 11) + (eph || '-'));
+        io.out(C.pad(n, 9) + C.pad(d.number || '-', 17) + C.pad(d.name || '', 21) + C.pad(!reg ? 'DOWN' : call ? (call.state === 'connected' ? (call.held && call.held[reg.mac] ? 'HOLD' : 'CONNECTED') : 'RINGING') : 'IDLE', 11) + (eph || '-'));
       }
       return true;
     }
@@ -949,5 +955,5 @@
   X.tree.if = (X.tree.if || []).concat(['switchport voice vlan WORD', 'mls qos trust cos', 'power inline auto', 'power inline never']);
   X.tree.exec = (X.tree.exec || []).concat(['show ephone', 'show ephone-dn', 'show telephony-service', 'show power inline']);
 
-  NS.voip = { SccpClient, SCCP_PORT, RTP_BASE, macDots };
+  NS.voip = { SccpClient, SCCP_PORT, RTP_BASE, macDots, CME_HOOKS, SCCP_TEXT, regOf, dnByNumber, regByDn, callOf, cmeListen, cmeCfg, cmeMsg };
 })(globalThis.NetLab = globalThis.NetLab || {});

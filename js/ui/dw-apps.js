@@ -343,7 +343,8 @@
 
   function iotMonApp(app, id, box, st) {
     const I = NS.iot;
-    const v = (st.iotmon = st.iotmon || { server: '', user: 'admin', pass: 'admin', data: null, busy: false, rule: { name: '', cthing: '', cprop: '', op: '=', cval: '', athing: '', aprop: '', aval: '' } });
+    const newRule = () => ({ name: '', match: 'all', conds: [{ type: 'thing', thing: '', prop: '', op: '=', value: '' }], actions: [{ thing: '', prop: '', value: '' }] });
+    const v = (st.iotmon = st.iotmon || { server: '', user: 'admin', pass: 'admin', data: null, busy: false, rule: newRule() });
     if (!v.server) { const d = dev0(app, id); if (d.gateway != null) v.server = U.ipStr(d.gateway); }
     const e = err();
     const view = h('div');
@@ -380,33 +381,59 @@
       if (!things.length) grid.append(h('div', { class: 'muted' }, 'Нет зарегистрированных устройств.'));
       view.append(grid);
       // правила
+      const RT = NS.iotRules;
       const rules = v.data.rules || [];
-      view.append(DW.section('Правила (условия)'), h('table', { class: 'tbl' }, h('tr', null, ['Вкл', 'Имя', 'Если', 'То', ''].map((x) => h('th', null, x))),
+      view.append(DW.section('Правила «если… то…»' + (v.data.clock ? ' · часы сервера: ' + v.data.clock : '')), h('table', { class: 'tbl' }, h('tr', null, ['Вкл', 'Имя', 'Если', 'То', ''].map((x) => h('th', null, x))),
         rules.length ? rules.map((r, i) => h('tr', null,
           h('td', null, h('input', { type: 'checkbox', checked: r.enabled, onChange: (ev) => { const nr = rules.map((x) => Object.assign({}, x)); nr[i].enabled = ev.target.checked; saveRules(nr); } })),
-          h('td', null, r.name), h('td', { class: 'mono' }, r.cond.thing + '.' + r.cond.prop + ' ' + r.cond.op + ' ' + r.cond.value),
+          h('td', null, r.name), h('td', { class: 'mono' }, RT.ruleText(r)),
           h('td', { class: 'mono' }, r.actions.map((a) => a.thing + '.' + a.prop + ' = ' + a.value).join('; ')),
           h('td', null, h('button', { class: 'btn icon small danger', onClick: () => saveRules(rules.filter((_, j) => j !== i)) }, UI.icon('delete')))))
           : h('tr', { class: 'empty' }, h('td', { colspan: 5 }, 'Правил нет'))));
+      if (!v.rule || !v.rule.conds) v.rule = newRule();
       const R = v.rule;
-      const thingSel = (key, filter) => DW.select([['', '— устройство —']].concat(things.filter(filter || (() => true)).map((t) => [t.name, t.name])), R[key], (val) => { R[key] = val; draw(); });
-      const propSel = (tk, pk, onlyControl) => {
-        const t = things.find((x) => x.name === R[tk]);
+      const thingSel = (o, filter) => DW.select([['', '— устройство —']].concat(things.filter(filter || (() => true)).map((t) => [t.name, t.name])), o.thing, (val) => { o.thing = val; o.prop = ''; draw(); });
+      const propSel = (o, onlyControl) => {
+        const t = things.find((x) => x.name === o.thing);
         const props = t && I.KINDS[t.kind] ? Object.entries(I.KINDS[t.kind].props).filter(([, m]) => !onlyControl || m.control).map(([p, m]) => [p, (m.title || p) + ' (' + p + ')']) : [];
-        if (props.length && !props.some((x) => x[0] === R[pk])) R[pk] = props[0][0];
-        return DW.select(props.length ? props : [['', '—']], R[pk], (val) => { R[pk] = val; });
+        if (props.length && !props.some((x) => x[0] === o.prop)) o.prop = props[0][0];
+        return DW.select(props.length ? props : [['', '—']], o.prop, (val) => { o.prop = val; });
       };
-      const valIn = (key) => inp(R, key, { placeholder: 'значение', style: { width: '110px' } });
+      const valIn = (o) => inp(o, 'value', { placeholder: 'значение', style: { width: '100px' } });
+      const rm = (list, i) => (list.length > 1 ? h('button', { class: 'btn icon small', title: 'Убрать', onClick: () => { list.splice(i, 1); draw(); } }, '×') : null);
+      const word = (i) => h('span', { class: 'muted', style: { width: '36px' } }, i ? (R.match === 'any' ? 'или' : 'и') : 'если');
+      const condRow = (c, i) => {
+        const type = DW.select([['thing', 'устройство'], ['time', 'время']], c.type, (val) => { c.type = val; draw(); });
+        if (c.type === 'time') {
+          const days = h('div', { class: 'vlan-checks' }, [1, 2, 3, 4, 5, 6, 0].map((d) => {
+            const cb = h('input', { type: 'checkbox', checked: c.days.includes(d) });
+            cb.addEventListener('change', () => { c.days = cb.checked ? c.days.concat([d]) : c.days.filter((x) => x !== d); });
+            return h('label', null, cb, ' ' + RT.DAYS[d]);
+          }));
+          return h('div', { class: 'row' }, word(i), type, h('span', null, 'с'), inp(c, 'from', { type: 'time', style: { width: '96px' } }), h('span', null, 'до'), inp(c, 'to', { type: 'time', style: { width: '96px' } }), days, rm(R.conds, i));
+        }
+        return h('div', { class: 'row' }, word(i), type, thingSel(c), propSel(c), DW.select(['=', '!=', '>', '<', '>=', '<='].map((o) => [o, o]), c.op, (val) => { c.op = val; }), valIn(c), rm(R.conds, i));
+      };
+      const actRow = (a, i) => h('div', { class: 'row' }, h('span', { class: 'muted', style: { width: '36px' } }, i ? 'и' : 'то'),
+        thingSel(a, (t) => I.KINDS[t.kind] && Object.values(I.KINDS[t.kind].props).some((m) => m.control)), propSel(a, true), h('span', null, '='), valIn(a), rm(R.actions, i));
       view.append(h('div', { class: 'rule-form' },
-        h('div', { class: 'row' }, h('span', null, 'Имя'), inp(R, 'name', { placeholder: 'например, Тревога', style: { width: '160px' } })),
-        h('div', { class: 'row' }, h('span', null, 'Если'), thingSel('cthing'), propSel('cthing', 'cprop'), DW.select(['=', '!=', '>', '<', '>=', '<='].map((o) => [o, o]), R.op, (val) => { R.op = val; }), valIn('cval')),
-        h('div', { class: 'row' }, h('span', null, 'То'), thingSel('athing', (t) => I.KINDS[t.kind] && Object.values(I.KINDS[t.kind].props).some((m) => m.control)), propSel('athing', 'aprop', true), h('span', null, '='), valIn('aval'),
+        h('div', { class: 'row' }, h('span', null, 'Имя'), inp(R, 'name', { placeholder: 'например, Вечерний свет', style: { width: '180px' } }),
+          h('span', null, 'Условия:'), DW.select([['all', 'все сразу (И)'], ['any', 'любое из них (ИЛИ)']], R.match, (val) => { R.match = val; draw(); })),
+        R.conds.map(condRow),
+        h('div', { class: 'row' }, h('button', { class: 'btn outline small', onClick: () => { R.conds.push({ type: 'thing', thing: '', prop: '', op: '=', value: '' }); draw(); } }, '+ условие'),
+          h('button', { class: 'btn outline small', onClick: () => { R.conds.push({ type: 'time', from: '18:00', to: '23:00', days: [] }); draw(); } }, '+ расписание')),
+        R.actions.map(actRow),
+        h('div', { class: 'row' }, h('button', { class: 'btn outline small', onClick: () => { R.actions.push({ thing: '', prop: '', value: '' }); draw(); } }, '+ действие'),
           h('button', { class: 'btn primary small', onClick: () => {
-            if (!R.name.trim() || !R.cthing || !R.athing || R.cval === '' || R.aval === '') { e.textContent = 'Заполните имя, условие и действие'; return; }
-            saveRules(rules.concat([{ name: R.name.trim(), enabled: true, cond: { thing: R.cthing, prop: R.cprop, op: R.op, value: R.cval }, actions: [{ thing: R.athing, prop: R.aprop, value: R.aval }] }]));
-            R.name = '';
+            e.textContent = '';
+            if (!R.name.trim()) { e.textContent = 'Задайте имя правила'; return; }
+            if (R.conds.some((c) => (c.type === 'time' ? !c.from || !c.to : !c.thing || c.value === ''))) { e.textContent = 'Заполните все условия (устройство и значение или время «с» и «до»)'; return; }
+            if (R.actions.some((a) => !a.thing || a.value === '')) { e.textContent = 'Заполните все действия'; return; }
+            const conds = R.conds.map((c) => (c.type === 'time' ? { type: 'time', from: c.from, to: c.to, days: c.days.slice() } : { thing: c.thing, prop: c.prop, op: c.op, value: c.value }));
+            saveRules(rules.concat([{ name: R.name.trim(), enabled: true, match: R.match, conds, actions: R.actions.map((a) => ({ thing: a.thing, prop: a.prop, value: a.value })) }]));
+            v.rule = newRule();
           } }, 'Добавить правило'))),
-      h('div', { class: 'muted small', style: { marginTop: '4px' } }, 'Значения: true/false для вкл/выкл и открыто/закрыто, 0/1/2 для уровней, числа для датчиков.'));
+      h('div', { class: 'muted small', style: { marginTop: '4px' } }, 'Значения: true/false для вкл/выкл и открыто/закрыто, 0/1/2 для уровней, числа для датчиков. Расписание — по часам IoT-сервера (их можно задать на странице сервера или получить по NTP); без отмеченных дней — каждый день.'));
     };
     box.append(DW.form(lbl('IoT-сервер'), inp(v, 'server', { class: 'inp mono', placeholder: '192.168.25.1' }), lbl('Пользователь'), inp(v, 'user'), lbl('Пароль'), inp(v, 'pass', { type: 'password' }),
       h('span'), h('div', { class: 'row' }, h('button', { class: 'btn primary small', onClick: load }, v.data ? 'Обновить' : 'Войти'), e)), view);

@@ -11,7 +11,8 @@
   const MAX_L2_HOPS = 64;        // защита от петель через концентраторы
   const WIFI_RANGE = 420;        // дальность Wi-Fi в единицах схемы
 
-  const DATA_MEDIA = new Set(['copper', 'fiber', 'serial', 'wireless', 'phone', 'iot']);
+  const DATA_MEDIA = new Set(['copper', 'fiber', 'serial', 'wireless', 'phone', 'iot', 'coax']);
+  const CELL_RANGE = 1400;       // дальность вышки 3G/4G
 
   const CABLES = {
     auto: 'Автоматически',
@@ -21,11 +22,14 @@
     console: 'Консольный',
     serial: 'Serial',
     phone: 'Телефонный',
+    coaxial: 'Коаксиальный',
     iot: 'IoT (кастомный)',
     wireless: 'Беспроводная связь',
   };
 
   NS.deviceTypes = NS.deviceTypes || {};
+  /** Расширения уровня схемы (сценарии PDU, задание, настройки): { key, init(net), save(net) → данные|null, load(net, данные) }. */
+  NS.netExt = NS.netExt || [];
 
   function isData(p) { return !!p && DATA_MEDIA.has(p.media); }
 
@@ -37,8 +41,9 @@
       case 'console': return p.media === 'console' || p.media === 'rs232';
       case 'serial': return p.media === 'serial';
       case 'phone': return p.media === 'phone';
+      case 'coaxial': return p.media === 'coax';
       case 'iot': return p.media === 'iot';
-      default: return p.media === 'copper' || p.media === 'fiber' || p.media === 'serial' || p.media === 'phone' || p.media === 'iot';
+      default: return p.media === 'copper' || p.media === 'fiber' || p.media === 'serial' || p.media === 'phone' || p.media === 'iot' || p.media === 'coax';
     }
   }
 
@@ -68,6 +73,7 @@
       this.activity = [];
       this.stormUntil = -1;
       this.routingDirty = true;
+      for (const e of NS.netExt) if (e.init) e.init(this);
     }
 
     /* ---------- уведомления для интерфейса ---------- */
@@ -216,6 +222,7 @@
     /** Конкретный тип кабеля для «Автоматически». */
     static resolveCable(pa, pb) {
       if (pa.media === 'phone') return 'phone';
+      if (pa.media === 'coax') return 'coaxial';
       if (pa.media === 'iot') return 'iot';
       if (pa.media === 'fiber') return 'fiber';
       if (pa.media === 'serial') return 'serial';
@@ -357,12 +364,23 @@
         if (ap) return { ap, reason: null };
       }
       if (!dev.power) return { ap: null, reason: 'Устройство выключено' };
+      if (!cfg.ssid && dev.cellular) return { ap: null, reason: 'Нет сети 3G/4G: вышка сотовой связи слишком далеко или выключена' };
       if (!cfg.ssid) return { ap: null, reason: 'Не задан SSID сети' };
-      const same = this.accessPoints().filter((ap) => ap.wifi.ssid === cfg.ssid);
+      const nets = (ap) => wlansOf(ap).filter((w) => w.ssid === cfg.ssid);
+      const same = this.accessPoints().filter((ap) => nets(ap).length);
       if (!same.length) return { ap: null, reason: 'Сеть «' + cfg.ssid + '» не найдена' };
-      const near = same.filter((ap) => Math.hypot(ap.x - dev.x, ap.y - dev.y) <= WIFI_RANGE);
+      const near = same.filter((ap) => Math.hypot(ap.x - dev.x, ap.y - dev.y) <= this.wifiRange());
       if (!near.length) return { ap: null, reason: 'Точка доступа «' + cfg.ssid + '» слишком далеко' };
-      if (!near.some((ap) => (ap.wifi.security || 'open') === (cfg.security || 'open'))) return { ap: null, reason: 'Тип защиты не совпадает с точкой доступа' };
+      const sec = near.flatMap((ap) => nets(ap).map((w) => ({ ap, w }))).filter((x) => (x.w.security || 'open') === (cfg.security || 'open'));
+      if (!sec.length) return { ap: null, reason: 'Тип защиты не совпадает с точкой доступа' };
+      if ((cfg.security || 'open') === 'wpa2-ent') {
+        for (const x of sec) {
+          const st = x.ap.entCheck ? x.ap.entCheck(dev, x.w, cfg, true) : 'unsupported';
+          if (st === 'pending') return { ap: null, reason: 'Проверка WPA2-Enterprise на RADIUS-сервере…' };
+          if (st === 'fail') return { ap: null, reason: 'RADIUS-сервер отклонил пользователя ' + (cfg.user || '') + ' (или сервер недоступен)' };
+          if (st === 'unsupported') return { ap: null, reason: 'Эта точка доступа не поддерживает WPA2-Enterprise' };
+        }
+      }
       return { ap: null, reason: 'Неверный ключ (пароль) сети' };
     }
 
@@ -379,9 +397,9 @@
     scanWifi(dev) {
       return this.accessPoints()
         .map((ap) => ({ ap, dist: Math.hypot(ap.x - dev.x, ap.y - dev.y) }))
-        .filter((x) => x.dist <= WIFI_RANGE)
+        .filter((x) => x.dist <= this.wifiRange())
         .sort((a, b) => a.dist - b.dist)
-        .map((x) => ({ ssid: x.ap.wifi.ssid, security: x.ap.wifi.security || 'open', channel: x.ap.wifi.channel || 6, signal: Math.max(1, Math.round(100 - (x.dist / WIFI_RANGE) * 80)), ap: x.ap }));
+        .flatMap((x) => wlansOf(x.ap).map((w) => ({ ssid: w.ssid, security: w.security || 'open', channel: w.channel || x.ap.wifi.channel || 6, signal: Math.max(1, Math.round(100 - (x.dist / this.wifiRange()) * 80)), ap: x.ap })));
     }
 
     updateWireless() {
@@ -391,17 +409,29 @@
         const i = d.ports.findIndex((p) => p.media === 'wireless' && !p.radio);
         if (i < 0 || !d.power || !d.ports[i].adminUp) continue;
         const cfg = d.wifi || {};
-        if (!cfg.ssid) continue;
+        if (!cfg.ssid && !d.cellular) continue;
         let best = null;
         let bestD = Infinity;
-        for (const ap of aps) {
-          const w = ap.wifi;
-          if (w.ssid !== cfg.ssid) continue;
-          const sec = w.security || 'open';
-          if (sec !== (cfg.security || 'open')) continue;
-          if (sec !== 'open' && w.key !== cfg.key) continue;
+        for (const ap of cfg.ssid ? aps : []) {
           const dist = Math.hypot(ap.x - d.x, ap.y - d.y);
-          if (dist <= WIFI_RANGE && dist < bestD) { best = ap; bestD = dist; }
+          if (dist > this.wifiRange() || dist >= bestD) continue;
+          for (const w of wlansOf(ap)) {
+            if (w.ssid !== cfg.ssid) continue;
+            const sec = w.security || 'open';
+            if (sec !== (cfg.security || 'open')) continue;
+            if (sec === 'wpa2' && w.key !== cfg.key) continue;
+            if (sec === 'wpa2-ent' && !(ap.entCheck && ap.entCheck(d, w, cfg) === 'ok')) continue;
+            best = ap;
+            bestD = dist;
+            break;
+          }
+        }
+        if (!best && d.cellular) {
+          for (const t of aps) {
+            if (t.type !== 'celltower') continue;
+            const dist = Math.hypot(t.x - d.x, t.y - d.y);
+            if (dist <= this.cellRange() && dist < bestD) { best = t; bestD = dist; }
+          }
         }
         if (best) want.set(d.id, { ap: best, radio: best.ports.findIndex((p) => p.radio), port: i });
       }
@@ -421,6 +451,10 @@
         this.links.set(id, link);
       }
     }
+
+    /** Дальность Wi-Fi и вышки 3G/4G в единицах схемы (модуль физических расстояний может пересчитать из метров). */
+    wifiRange() { return WIFI_RANGE; }
+    cellRange() { return CELL_RANGE; }
 
     /** Пересчитать состояние портов, Wi-Fi и STP после любого изменения топологии/настроек. */
     refreshTopology() {
@@ -487,7 +521,8 @@
         return false;
       }
       if (p.radio) {
-        let targets = [...(p.wlinks || [])].map((id) => this.links.get(id)).filter((l) => l && l.b.dev !== excludeDev);
+        const keep = typeof excludeDev === 'function' ? (l) => excludeDev(this.devices.get(l.b.dev)) : (l) => l.b.dev !== excludeDev;
+        let targets = [...(p.wlinks || [])].map((id) => this.links.get(id)).filter((l) => l && keep(l));
         if (!U.isMulticastMac(frame.dst)) {
           const t = targets.find((l) => {
             const cd = this.devices.get(l.b.dev);
@@ -684,6 +719,7 @@
         links,
         notes: this.notes.map((n) => Object.assign({}, n)),
         shapes: this.shapes.map((s) => Object.assign({}, s)),
+        ...Object.fromEntries(NS.netExt.map((e) => [e.key, e.save(this)]).filter(([, v]) => v != null)),
       };
     }
 
@@ -716,6 +752,7 @@
       }
       net.notes = (data.notes || []).map((n) => ({ id: n.id, x: n.x, y: n.y, text: String(n.text || '') }));
       net.shapes = (data.shapes || []).map((s) => ({ id: s.id, kind: s.kind === 'ellipse' ? 'ellipse' : 'rect', x: +s.x || 0, y: +s.y || 0, w: +s.w || 50, h: +s.h || 50, color: String(s.color || '#3b82f6') }));
+      for (const e of NS.netExt) e.load(net, data[e.key]);
       const c = Object.assign({}, net.counters, data.counters || {});
       c.id = Math.max(c.id, maxNum(data.devices || [], 'd') + 1);
       c.link = Math.max(c.link, maxNum(data.links || [], 'l') + 1);
@@ -731,6 +768,11 @@
 
   Network.LINK_DELAY = LINK_DELAY;
   Network.WIFI_RANGE = WIFI_RANGE;
+  Network.CELL_RANGE = CELL_RANGE;
+
+  /** Беспроводные сети точки доступа: одна (wifi) или несколько (WLAN контроллера). */
+  function wlansOf(ap) { return ap.wlans ? ap.wlans() : [ap.wifi]; }
+  Network.wlansOf = wlansOf;
   Network.CABLES = CABLES;
   Network.isData = isData;
   Network.portFits = portFits;

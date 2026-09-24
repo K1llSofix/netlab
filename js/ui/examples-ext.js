@@ -109,7 +109,7 @@
         ios(isp, 'interface GigabitEthernet0/2\n ip address 10.0.3.1 255.255.255.0\n no shutdown');
         const home = host(net, 'Laptop-PT', 'Home', 450, 320, '10.0.3.10/24', '10.0.3.1');
         link(net, home, 0, isp, 2);
-        net.addNote(40, 20, 'IPsec: PC-Office1 → ping 192.168.2.10. Первый пакет запускает IKE, дальше между R-Office1 и ISP видно только ESP.\nR-Office1 → show crypto isakmp sa, show crypto ipsec sa.\nEasy VPN: Home → Рабочий стол → VPN: группа STAFF, ключ staff-key, сервер 10.0.2.1, anna / vpn123 → ping 192.168.2.10.');
+        net.addNote(40, 20, 'IPsec: PC-Office1 → ping 192.168.2.10. Первый пакет запускает IKE: фаза 1 (Main Mode, 6 сообщений ISAKMP) и фаза 2 (Quick Mode, 3), дальше между R-Office1 и ISP видно только ESP.\nR-Office1 → debug crypto isakmp, show crypto isakmp sa, show crypto ipsec sa, show crypto session.\nEasy VPN: Home → Рабочий стол → VPN: группа STAFF, ключ staff-key, сервер 10.0.2.1, anna / vpn123 → ping 192.168.2.10.');
         return finish(net);
       },
     },
@@ -219,11 +219,12 @@
         link(net, lap, 0, sw, 10);
         lap.setDhcp();
         gw.iotd.rules = [
-          { name: 'Свет при движении', enabled: true, cond: { thing: 'Motion', prop: 'detected', op: '=', value: true }, actions: [{ thing: 'Lamp', prop: 'level', value: 2 }] },
-          { name: 'Пожар', enabled: true, cond: { thing: 'Smoke', prop: 'level', op: '>=', value: 50 }, actions: [{ thing: 'Siren', prop: 'on', value: true }, { thing: 'Door', prop: 'open', value: true }] },
-          { name: 'Жарко', enabled: true, cond: { thing: 'Thermometer', prop: 'value', op: '>', value: 28 }, actions: [{ thing: 'Fan', prop: 'speed', value: 2 }] },
+          { name: 'Свет при движении', enabled: true, match: 'all', conds: [{ thing: 'Motion', prop: 'detected', op: '=', value: true }], actions: [{ thing: 'Lamp', prop: 'level', value: 2 }] },
+          { name: 'Ночник', enabled: true, match: 'all', conds: [{ thing: 'Motion', prop: 'detected', op: '=', value: true }, { type: 'time', from: '22:00', to: '07:00', days: [] }], actions: [{ thing: 'Lamp', prop: 'level', value: 1 }] },
+          { name: 'Пожар', enabled: true, match: 'any', conds: [{ thing: 'Smoke', prop: 'level', op: '>=', value: 50 }, { thing: 'Thermometer', prop: 'value', op: '>', value: 60 }], actions: [{ thing: 'Siren', prop: 'on', value: true }, { thing: 'Door', prop: 'open', value: true }] },
+          { name: 'Жарко', enabled: true, match: 'all', conds: [{ thing: 'Thermometer', prop: 'value', op: '>', value: 28 }], actions: [{ thing: 'Fan', prop: 'speed', value: 2 }] },
         ];
-        net.addNote(40, 20, 'Admin → Рабочий стол → IoT Monitor: сервер 192.168.25.1, admin / admin → «Войти».\nОткройте Motion → вкладка «Устройство» → включите датчик: правило зажжёт лампу.\nThermometer → 30 °C включит вентилятор, Smoke → 60 % — сирену и откроет дверь.');
+        net.addNote(40, 20, 'Admin → Рабочий стол → IoT Monitor: сервер 192.168.25.1, admin / admin → «Войти».\nMotion → вкладка «Устройство» → включите датчик. Часы шлюза сейчас 00:00, поэтому сработает «Ночник» (движение И время 22:00–07:00) — лампа вполсилы.\nHome Gateway → «Настройка» → IoT-сервер → часы 12:00 — лампа загорится полностью.\nThermometer → 30 °C включит вентилятор; Smoke → 60 % ИЛИ жара > 60 °C — сирену и откроет дверь.');
         return finish(net);
       },
     },
@@ -263,6 +264,50 @@
         link(net, pc, 0, sw, 0);
         net.addNote(40, 20, 'Engineer → Web Browser → http://192.168.10.2:8000 — страница приложения на маршрутизаторе.\nEngineer → IoX IDE: адрес 192.168.1.1, admin / cisco → «Подключиться»; измените index.html → Deploy (остановите и деактивируйте старое).\nEdge-R1 → CLI: show iox-service, show app-hosting list.');
         return finish(net);
+      },
+    },
+    {
+      id: 'task-router',
+      title: 'Задание с проверкой: маршрутизатор между двумя сетями',
+      level: 'начальный',
+      desc: 'Пример задания (как Activity в Packet Tracer): инструкции, таймер и кнопка «Проверить», которая показывает процент выполнения. Свои задания делаются в меню «Задание» → «Мастер заданий».',
+      build() {
+        const make = (configured) => {
+          const net = new NS.Network();
+          const r = dev(net, '2911', 'R1', 420, 120);
+          const s1 = dev(net, '2960-24TT', 'SW-A', 240, 250);
+          const s2 = dev(net, '2960-24TT', 'SW-B', 600, 250);
+          link(net, r, 0, s1, 'GigabitEthernet0/1');
+          link(net, r, 1, s2, 'GigabitEthernet0/1');
+          const a = host(net, 'PC-PT', 'PC-A', 240, 400, '192.168.10.10/24', '192.168.10.1');
+          const b = host(net, 'PC-PT', 'PC-B', 600, 400, '192.168.20.10/24', '192.168.20.1');
+          link(net, a, 0, s1, 0);
+          link(net, b, 0, s2, 0);
+          if (configured) {
+            ios(r, 'hostname R1\ninterface GigabitEthernet0/0\n description LAN-A\n ip address 192.168.10.1 255.255.255.0\n no shutdown\n' +
+              'interface GigabitEthernet0/1\n description LAN-B\n ip address 192.168.20.1 255.255.255.0\n no shutdown');
+          }
+          return finish(net);
+        };
+        const A = NS.activity;
+        const answerNet = make(true);
+        answerNet.runUntilIdle(3000);
+        const items = A.candidates(answerNet).filter((c) => c.kind === 'cfg').map((c) => Object.assign({}, c, { points: c.label === 'hostname R1' ? 1 : 2 }));
+        const net = make(false);
+        net.task = A.build({
+          title: 'Маршрутизатор между двумя сетями',
+          instructions: '# Задача\nКомпьютеры PC-A (192.168.10.10) и PC-B (192.168.20.10) уже настроены, но друг друга не видят: маршрутизатор R1 не настроен.\n\n' +
+            '# Что сделать на R1 (вкладка CLI)\n- имя устройства: `hostname R1`\n- GigabitEthernet0/0: описание `LAN-A`, адрес **192.168.10.1/24**\n- GigabitEthernet0/1: описание `LAN-B`, адрес **192.168.20.1/24**\n\n' +
+            '# Проверка\nС PC-A выполните `ping 192.168.20.10`, затем нажмите «Проверить» на панели задания. Нужно набрать 100 %.',
+          timer: 15,
+          feedback: 'full',
+          answer: A.snapshot(answerNet),
+          initial: A.snapshot(net),
+          items,
+          tests: [{ from: 'PC-A', to: '192.168.20.10', expect: true, points: 4 }],
+        });
+        net.addNote(40, 20, 'Это задание: инструкции — кнопка «Инструкции» на панели справа сверху, проверка — «Проверить».\n«Заново» вернёт начальную схему. Автор задания меняет его в меню «Задание» → «Мастер заданий».');
+        return net;
       },
     },
   ];

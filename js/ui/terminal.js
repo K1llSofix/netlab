@@ -79,6 +79,13 @@
         return;
       }
       if (!dev) return;
+      if (this.kind === 'cli' && dev.type === 'asa') {
+        this.print(dev.name + ' — консоль Cisco ASA (NetLab).', 'hint');
+        this.print('Справка: ?  Команды: en, conf t, interface g1/1, nameif, show nameif, show xlate, show conn.', 'hint');
+        this.print('');
+        this.print('Type help or \'?\' for a list of available commands.');
+        return;
+      }
       if (this.kind === 'cli') {
         this.print(dev.name + ' — консоль Cisco IOS (NetLab).', 'hint');
         this.print('Справка: ?  Дополнение: Tab.  Сокращения: en, conf t, int g0/0, sh ip int br.', 'hint');
@@ -141,7 +148,9 @@
       if (!dev || !s || !NS.cli.isIos(dev) || s.pending || s.remote || s.stage || !dev.power) return false;
       const v = this.input.value;
       this.print(this.prompt() + v + '?', 'cmd');
-      NS.cliIos.help(dev, s, v + '?', { out: (t, cls) => this.print(t, cls), write: (t) => this.write(t) });
+      const io = { out: (t, cls) => this.print(t, cls), write: (t) => this.write(t), done() {}, clear() {}, mutate: (fn) => fn() };
+      if (dev.type === 'asa' && NS.cliAsa) NS.cliAsa.exec(dev, s, v + '?', io);
+      else NS.cliIos.help(dev, s, v + '?', io);
       return true;
     }
 

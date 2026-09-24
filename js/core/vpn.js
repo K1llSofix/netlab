@@ -156,108 +156,250 @@
 
   IpNode.hooks.runtime.push(function () {
     this.poolLeases = new Map();
-    this.ike = { sas: new Map(), bySpi: new Map(), pending: new Map(), failed: new Map() };
+    this.ike = { sas: new Map(), bySpi: new Map(), pending: new Map(), failed: new Map(), p1: new Map(), connSeq: 0 };
     this.vpnClients = new Map();
     this._tunCheck = false;
   });
 
-  /* ---------- IKE (упрощённый) ---------- */
+  /* ---------- IKE: фаза 1 (Main Mode, 6 сообщений) и фаза 2 (Quick Mode, 3 сообщения) ---------- */
 
-  function ikeData(dev, entry, f, pkt, mySpi) {
-    const c = cfg(dev);
-    const key = c.keys.find((k) => k.addr === entry.peer || k.addr === 0);
-    return {
-      isakmp: 'NEGOTIATE', policies: c.policies.slice().sort((a, b) => a.prio - b.prio).map((p) => Object.assign({}, p)),
-      key: key ? key.key : null, transforms: (c.sets[entry.ts] || {}).esp || [], spi: mySpi,
-      proxy: { src: pkt.src, dst: pkt.dst },
-    };
+  const keyFor = (dev, peer) => cfg(dev).keys.find((k) => k.addr === peer) || cfg(dev).keys.find((k) => k.addr === 0) || null;
+  const polText = (p) => p.enc + '/' + p.hash + '/' + p.auth + '/DH' + p.group;
+  const nonce = (dev) => ((dev.net.counters.xid++ * 2246822519) >>> 0).toString(16);
+  /** «Хэш» pre-shared key вместе с nonce обеих сторон: сам ключ по сети не передаётся. */
+  function psHash(key, a, b) {
+    let h = 0x811c9dc5;
+    const s = String(key) + '|' + a + '|' + b;
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+    return h.toString(16);
+  }
+  const dbg = (dev, key, text) => { if (dev.debugOut) dev.debugOut(key, text); };
+
+  /** ISAKMP SA (фаза 1) с пиром: у инициатора и ответчика — отдельные записи, как в IOS. */
+  const p1Key = (peer, role) => (role === 'initiator' ? 'I' : 'R') + peer;
+  function p1Ready(dev, peer) {
+    for (const r of ['initiator', 'responder']) {
+      const s = dev.ike.p1.get(p1Key(peer, r));
+      if (s && s.state === 'QM_IDLE') return s;
+    }
+    return null;
+  }
+  function p1Drop(dev, peer) { dev.ike.p1.delete(p1Key(peer, 'initiator')); dev.ike.p1.delete(p1Key(peer, 'responder')); }
+  function p1New(dev, peer, local, role, policy) {
+    const s = { peer, local, role, policy, state: 'MM_SA_SETUP', connId: 1000 + (++dev.ike.connSeq), created: dev.net.time, iNonce: null, rNonce: null };
+    dev.ike.p1.set(p1Key(peer, role), s);
+    return s;
   }
 
   IpNode.prototype.ikeStart = function (f, entry, pkt, opts) {
     const peer = entry.peer;
     let pend = this.ike.pending.get(peer);
     if (pend) { if (pend.queue.length < 32) pend.queue.push({ pkt, opts, f }); return; }
-    const mySpi = newSpi(this);
-    pend = { queue: [{ pkt, opts, f }], tries: 0, timer: null, mySpi, entry, f, port: this.allocPort() };
+    pend = { queue: [{ pkt, opts, f }], tries: 0, timer: null, mySpi: newSpi(this), entry, f, pkt, port: this.allocPort(), step: null, msg: null, why: '' };
     this.ike.pending.set(peer, pend);
     this.udp.set(pend.port, (reply) => this.ikeReply(peer, reply.payload.data || {}));
-    const send = () => {
-      pend.timer = null;
-      if (!this.ike.pending.has(peer)) return;
-      if (++pend.tries > IKE_TRIES) { this.ikeFail(peer, 'Пир ' + U.ipStr(peer) + ' не отвечает на IKE (UDP 500)'); return; }
-      const data = ikeData(this, entry, f, pkt, mySpi);
-      this.sendIp(P.ipv4(f.ip, peer, 'UDP', P.udp(pend.port, IKE_PORT, data), this.defaultTtl), {
-        why: 'IKE (ISAKMP): нужен защищённый канал к ' + U.ipStr(peer) + ' — предлагаю политики и ключ',
-        onError: (code, text) => this.ikeFail(peer, 'Нет связи с пиром ' + U.ipStr(peer) + ': ' + text),
-      });
-      if (this.ike.pending.has(peer)) pend.timer = this.timer(IKE_TIMEOUT, send);
-    };
-    send();
+    if (p1Ready(this, peer)) this.ikePhase2(peer);
+    else this.ikeMainMode(peer);
   };
 
-  IpNode.prototype.ikeFail = function (peer, text) {
+  IpNode.prototype.ikeMainMode = function (peer) {
+    const c = cfg(this);
+    p1Drop(this, peer);
+    dbg(this, 'crypto isakmp', 'ISAKMP:(0): beginning Main Mode exchange with ' + U.ipStr(peer));
+    this.ikeStep(peer, 'MM1', { policies: c.policies.slice().sort((a, b) => a.prio - b.prio).map((p) => Object.assign({}, p)) },
+      'IKE фаза 1 (Main Mode, 1/6): нужен защищённый канал к ' + U.ipStr(peer) + ' — предлагаю политики ISAKMP (' + (c.policies.map((p) => p.prio).join(', ') || 'нет') + ')');
+  };
+
+  IpNode.prototype.ikePhase2 = function (peer) {
+    const pend = this.ike.pending.get(peer);
+    if (!pend) return;
+    const ts = (cfg(this).sets[pend.entry.ts] || {}).esp || [];
+    dbg(this, 'crypto isakmp', 'ISAKMP:(' + (p1Ready(this, peer) || {}).connId + '):beginning Quick Mode exchange, M-ID of ' + pend.mySpi);
+    this.ikeStep(peer, 'QM1', { spi: pend.mySpi, transforms: ts, proxy: { src: pend.pkt.src, dst: pend.pkt.dst } },
+      'IKE фаза 2 (Quick Mode, 1/3): предлагаю transform-set ' + (ts.join(' ') || '(нет)') + ' для трафика ' + U.ipStr(pend.pkt.src) + ' → ' + U.ipStr(pend.pkt.dst) + ', мой SPI 0x' + pend.mySpi.toString(16));
+  };
+
+  /** Отправить очередное сообщение обмена (с повторами, пока не придёт ответ). */
+  IpNode.prototype.ikeStep = function (peer, step, data, why) {
+    const pend = this.ike.pending.get(peer);
+    if (!pend) return;
+    if (pend.timer) pend.timer.cancel();
+    Object.assign(pend, { step, msg: Object.assign({ isakmp: step }, data), why, tries: 0, timer: null });
+    this.ikeXmit(peer);
+  };
+
+  IpNode.prototype.ikeXmit = function (peer) {
+    const pend = this.ike.pending.get(peer);
+    if (!pend) return;
+    pend.timer = null;
+    if (++pend.tries > IKE_TRIES) {
+      const s = this.ike.p1.get(p1Key(peer, 'initiator'));
+      this.ikeFail(peer, 'Пир ' + U.ipStr(peer) + ' не отвечает на IKE (UDP 500)' + (pend.step !== 'MM1' ? ' — обмен остановился на ' + pend.step : ''), pend.step[0] === 'Q' ? 2 : 1);
+      if (s && s.state !== 'QM_IDLE') p1Drop(this, peer);
+      return;
+    }
+    dbg(this, 'crypto isakmp', 'ISAKMP:(0): sending packet to ' + U.ipStr(peer) + ' my_port 500 peer_port 500 (I) ' + pend.step + (pend.tries > 1 ? ' (retransmit)' : ''));
+    this.sendIp(P.ipv4(pend.f.ip, peer, 'UDP', P.udp(pend.port, IKE_PORT, pend.msg), this.defaultTtl), {
+      why: pend.why + (pend.tries > 1 ? ' — повторная отправка' : ''),
+      onError: (code, text) => { p1Drop(this, peer); this.ikeFail(peer, 'Нет связи с пиром ' + U.ipStr(peer) + ': ' + text, 1); },
+    });
+    if (this.ike.pending.has(peer)) pend.timer = this.timer(IKE_TIMEOUT, () => this.ikeXmit(peer));
+  };
+
+  IpNode.prototype.ikeFail = function (peer, text, phase) {
     const pend = this.ike.pending.get(peer);
     if (!pend) return;
     if (pend.timer) pend.timer.cancel();
     this.udp.delete(pend.port);
     this.ike.pending.delete(peer);
-    this.ike.failed.set(peer, { text, time: this.net.time });
-    this.note('IPsec: канал к ' + U.ipStr(peer) + ' не установлен — ' + text, null, 'drop');
+    this.ike.failed.set(peer, { text, phase: phase || 1, time: this.net.time });
+    this.note('IPsec: канал к ' + U.ipStr(peer) + ' не установлен — IKE фаза ' + (phase || 1) + ': ' + text, null, 'drop');
+    dbg(this, 'crypto isakmp', 'ISAKMP:(0):' + (phase === 2 ? 'Quick Mode' : 'Main Mode') + ' with ' + U.ipStr(peer) + ' failed: ' + text);
     for (const q of pend.queue) if (q.opts && q.opts.onError) q.opts.onError('ipsec', 'IPsec: ' + text);
   };
 
+  /** Ответы пира инициатору. */
   IpNode.prototype.ikeReply = function (peer, d) {
     const pend = this.ike.pending.get(peer);
     if (!pend) return;
-    if (d.isakmp === 'NOTIFY') { this.ikeFail(peer, d.text); return; }
-    if (d.isakmp !== 'OK') return;
-    if (pend.timer) pend.timer.cancel();
-    this.udp.delete(pend.port);
-    this.ike.pending.delete(peer);
-    this.ike.failed.delete(peer);
-    const sa = { peer, local: pend.f.ip, ifc: pend.f.name, map: pend.f.cryptoMap, entry: pend.entry, mySpi: pend.mySpi, peerSpi: d.spi, policy: d.policy, transforms: d.transforms, encaps: 0, decaps: 0, created: this.net.time, seqOut: 0 };
-    this.ike.sas.set(peer, sa);
-    this.ike.bySpi.set(sa.mySpi, sa);
-    this.note('IPsec: защищённый канал с ' + U.ipStr(peer) + ' установлен (IKE фаза 1 и 2, SPI 0x' + sa.mySpi.toString(16) + ')', null, 'accept');
-    for (const q of pend.queue) this.espSend(sa, q.pkt, q.opts);
+    const ip = U.ipStr(peer);
+    if (d.isakmp === 'NOTIFY') {
+      if (d.code === 'no-sa' && !pend.restarted) { pend.restarted = true; this.ikeMainMode(peer); return; }
+      if (d.phase !== 2) p1Drop(this, peer);
+      this.ikeFail(peer, d.text, d.phase || 1);
+      return;
+    }
+    const s = this.ike.p1.get(p1Key(peer, 'initiator'));
+    if (d.isakmp === 'MM2' && pend.step === 'MM1') {
+      const n = p1New(this, peer, pend.f.ip, 'initiator', d.policy);
+      n.iNonce = nonce(this);
+      dbg(this, 'crypto isakmp', 'ISAKMP:(0):Old State = IKE_I_MM1  New State = IKE_I_MM2 — policy ' + d.policy.prio + ' (' + polText(d.policy) + ') accepted by peer');
+      this.ikeStep(peer, 'MM3', { group: d.policy.group, nonce: n.iNonce },
+        'IKE фаза 1 (3/6): обмен ключами Диффи — Хеллмана (группа ' + d.policy.group + ') и случайными числами (nonce)');
+      return;
+    }
+    if (d.isakmp === 'MM4' && pend.step === 'MM3' && s) {
+      s.state = 'MM_KEY_EXCH';
+      s.rNonce = d.nonce;
+      const key = keyFor(this, peer);
+      if (!key) {
+        p1Drop(this, peer);
+        this.ikeFail(peer, 'на ' + this.name + ' нет crypto isakmp key для адреса ' + ip, 1);
+        return;
+      }
+      dbg(this, 'crypto isakmp', 'ISAKMP:(0):Old State = IKE_I_MM3  New State = IKE_I_MM4 — shared secret computed (SKEYID)');
+      this.ikeStep(peer, 'MM5', { id: pend.f.ip, hash: psHash(key.key, s.iNonce, s.rNonce) },
+        'IKE фаза 1 (5/6): аутентификация — мой адрес и хэш pre-shared key (уже зашифровано общим ключом)');
+      return;
+    }
+    if (d.isakmp === 'MM6' && pend.step === 'MM5' && s) {
+      s.state = 'QM_IDLE';
+      this.note('IKE фаза 1 с ' + ip + ' завершена: ISAKMP SA установлен (политика ' + s.policy.prio + ': ' + polText(s.policy) + ')', null, 'accept');
+      dbg(this, 'crypto isakmp', 'ISAKMP:(' + s.connId + '):SA authentication status: authenticated');
+      dbg(this, 'crypto isakmp', 'ISAKMP:(' + s.connId + '):Old State = IKE_I_MM6  New State = IKE_P1_COMPLETE');
+      this.ikePhase2(peer);
+      return;
+    }
+    if (d.isakmp === 'QM2' && pend.step === 'QM1') {
+      const p1 = p1Ready(this, peer);
+      if (pend.timer) pend.timer.cancel();
+      this.udp.delete(pend.port);
+      this.ike.pending.delete(peer);
+      this.ike.failed.delete(peer);
+      const old = this.ike.sas.get(peer);
+      if (old) this.ike.bySpi.delete(old.mySpi);
+      const sa = { peer, local: pend.f.ip, ifc: pend.f.name, map: pend.f.cryptoMap, entry: pend.entry, mySpi: pend.mySpi, peerSpi: d.spi, policy: p1 ? p1.policy : d.policy, transforms: d.transforms, encaps: 0, decaps: 0, created: this.net.time, seqOut: 0 };
+      this.ike.sas.set(peer, sa);
+      this.ike.bySpi.set(sa.mySpi, sa);
+      this.sendIp(P.ipv4(pend.f.ip, peer, 'UDP', P.udp(pend.port, IKE_PORT, { isakmp: 'QM3' }), this.defaultTtl), { why: 'IKE фаза 2 (3/3): подтверждаю — IPsec SA готов' });
+      dbg(this, 'crypto ipsec', 'IPSEC(create_sa): sa created, (sa) sa_dest= ' + ip + ', sa_proto= 50, sa_spi= 0x' + (d.spi >>> 0).toString(16).toUpperCase() + ', sa_trans= ' + (d.transforms || []).join(' '));
+      this.note('IPsec: защищённый канал с ' + ip + ' установлен (IKE фаза 2, SPI 0x' + sa.mySpi.toString(16) + ')', null, 'accept');
+      for (const q of pend.queue) this.espSend(sa, q.pkt, q.opts);
+    }
   };
 
-  /** Ответчик IKE: проверить ключ, политики, crypto map и зеркальный ACL. */
+  /** Ответчик IKE: фаза 1 — политика, ключ DH, аутентификация; фаза 2 — crypto map, transform-set, зеркальный ACL. */
   IpNode.prototype.ikeRespond = function (pkt, f) {
     const d = pkt.payload.data || {};
     const reply = (data, why) => this.sendIp(P.ipv4(pkt.dst, pkt.src, 'UDP', P.udp(IKE_PORT, pkt.payload.sport, data), this.defaultTtl), { why });
-    const refuse = (text) => { this.note('IKE: отказ ' + U.ipStr(pkt.src) + ' — ' + text, null, 'drop'); reply({ isakmp: 'NOTIFY', text }, 'IKE: отказ — ' + text); };
+    const refuse = (text, phase, code) => {
+      this.note('IKE: отказ ' + U.ipStr(pkt.src) + ' (фаза ' + (phase || 1) + ') — ' + text, null, 'drop');
+      dbg(this, 'crypto isakmp', 'ISAKMP:(0):' + (phase === 2 ? 'Quick Mode' : 'Main Mode') + ' with ' + U.ipStr(pkt.src) + ' rejected: ' + text);
+      reply({ isakmp: 'NOTIFY', text, phase: phase || 1, code }, 'IKE: отказ (фаза ' + (phase || 1) + ') — ' + text);
+    };
     if (d.isakmp === 'CLIENT' || d.isakmp === 'CLIENT-BYE') { this.ezvpnRespond(pkt, f, d, reply, refuse); return; }
-    if (d.isakmp !== 'NEGOTIATE') return;
     const c = cfg(this);
-    const key = c.keys.find((k) => k.addr === pkt.src || k.addr === 0);
-    if (!key) { refuse('на ' + this.name + ' нет crypto isakmp key для адреса ' + U.ipStr(pkt.src)); return; }
-    if (key.key !== d.key) { refuse('не совпадает pre-shared key (crypto isakmp key)'); return; }
-    const mine = c.policies.slice().sort((a, b) => a.prio - b.prio);
-    let policy = null;
-    for (const theirs of d.policies || []) { policy = mine.find((m) => samePolicy(m, theirs)); if (policy) break; }
-    if (!policy) { refuse('NO_PROPOSAL_CHOSEN — нет одинаковой crypto isakmp policy (шифрование, хэш, аутентификация, группа DH)'); return; }
-    if (policy.auth !== 'pre-share') { refuse('в политике должна быть authentication pre-share'); return; }
-    const inIf = this.ifaces.find((x) => x.ip === pkt.dst) || f;
-    if (!inIf.cryptoMap) { refuse('на интерфейсе ' + inIf.name + ' не применена crypto map'); return; }
-    const entry = (c.maps[inIf.cryptoMap] || []).find((e) => e.peer === pkt.src);
-    if (!entry) { refuse('в crypto map ' + inIf.cryptoMap + ' нет записи с set peer ' + U.ipStr(pkt.src)); return; }
-    const ts = (c.sets[entry.ts] || {}).esp || [];
-    const theirTs = d.transforms || [];
-    if (!ts.length || ts.join(' ') !== theirTs.join(' ')) { refuse('не совпадает transform-set (' + (ts.join(' ') || 'нет') + ' / ' + (theirTs.join(' ') || 'нет') + ')'); return; }
-    const acl = this.acls.get(entry.acl);
-    const mirror = d.proxy ? { src: d.proxy.dst, dst: d.proxy.src, proto: 'ICMP', payload: {} } : null;
-    if (!acl || (mirror && !acl.check(Object.assign({}, mirror, { proto: 'IP' })).permit && !acl.check(mirror).permit)) {
-      refuse('ACL ' + (entry.acl || '?') + ' в crypto map не зеркален ACL пира (match address)');
-      return;
+    const peer = pkt.src;
+    const s = this.ike.p1.get(p1Key(peer, 'responder'));
+    switch (d.isakmp) {
+      case 'MM1': {
+        const mine = c.policies.slice().sort((a, b) => a.prio - b.prio);
+        let policy = null;
+        for (const theirs of d.policies || []) { policy = mine.find((m) => samePolicy(m, theirs)); if (policy) break; }
+        if (!policy) { refuse('NO_PROPOSAL_CHOSEN — нет одинаковой crypto isakmp policy (шифрование, хэш, аутентификация, группа DH)', 1); return; }
+        if (policy.auth !== 'pre-share') { refuse('в политике должна быть authentication pre-share', 1); return; }
+        this.ike.p1.delete(p1Key(peer, 'responder'));
+        p1New(this, peer, pkt.dst, 'responder', policy);
+        dbg(this, 'crypto isakmp', 'ISAKMP:(0):Checking ISAKMP transform ' + policy.prio + ' against priority ' + policy.prio + ' policy');
+        dbg(this, 'crypto isakmp', 'ISAKMP:(0):atts are acceptable. Next payload is 0');
+        reply({ isakmp: 'MM2', policy }, 'IKE фаза 1 (2/6): принимаю политику ' + policy.prio + ' (' + polText(policy) + ')');
+        return;
+      }
+      case 'MM3': {
+        if (!s) return;
+        if (!keyFor(this, peer)) { this.ike.p1.delete(p1Key(peer, 'responder')); refuse('на ' + this.name + ' нет crypto isakmp key для адреса ' + U.ipStr(peer), 1); return; }
+        s.iNonce = d.nonce;
+        s.rNonce = nonce(this);
+        s.state = 'MM_KEY_EXCH';
+        reply({ isakmp: 'MM4', group: s.policy.group, nonce: s.rNonce }, 'IKE фаза 1 (4/6): мой ключ Диффи — Хеллмана и nonce — теперь у обеих сторон общий секрет');
+        return;
+      }
+      case 'MM5': {
+        if (!s || !s.rNonce) return;
+        const key = keyFor(this, peer);
+        if (!key || psHash(key.key, s.iNonce, s.rNonce) !== d.hash) {
+          this.ike.p1.delete(p1Key(peer, 'responder'));
+          refuse('не совпадает pre-shared key (crypto isakmp key) — аутентификация не прошла', 1);
+          return;
+        }
+        s.state = 'QM_IDLE';
+        dbg(this, 'crypto isakmp', 'ISAKMP:(' + s.connId + '):SA authentication status: authenticated');
+        this.note('IKE фаза 1 с ' + U.ipStr(peer) + ' завершена: ISAKMP SA установлен (политика ' + s.policy.prio + ')', null, 'accept');
+        reply({ isakmp: 'MM6', id: pkt.dst, hash: psHash(key.key, s.rNonce, s.iNonce) }, 'IKE фаза 1 (6/6): пир аутентифицирован — ISAKMP SA установлен');
+        return;
+      }
+      case 'QM1': {
+        const p1 = p1Ready(this, peer);
+        if (!p1) { refuse('нет ISAKMP SA с ' + U.ipStr(peer) + ' — сначала фаза 1', 2, 'no-sa'); return; }
+        const inIf = this.ifaces.find((x) => x.ip === pkt.dst) || f;
+        if (!inIf.cryptoMap) { refuse('на интерфейсе ' + inIf.name + ' не применена crypto map', 2); return; }
+        const entry = (c.maps[inIf.cryptoMap] || []).find((e) => e.peer === peer);
+        if (!entry) { refuse('в crypto map ' + inIf.cryptoMap + ' нет записи с set peer ' + U.ipStr(peer), 2); return; }
+        const ts = (c.sets[entry.ts] || {}).esp || [];
+        const theirTs = d.transforms || [];
+        if (!ts.length || ts.join(' ') !== theirTs.join(' ')) { refuse('не совпадает transform-set (' + (ts.join(' ') || 'нет') + ' / ' + (theirTs.join(' ') || 'нет') + ')', 2); return; }
+        const acl = this.acls.get(entry.acl);
+        const mirror = d.proxy ? { src: d.proxy.dst, dst: d.proxy.src, proto: 'ICMP', payload: {} } : null;
+        if (!acl || (mirror && !acl.check(Object.assign({}, mirror, { proto: 'IP' })).permit && !acl.check(mirror).permit)) {
+          refuse('ACL ' + (entry.acl || '?') + ' в crypto map не зеркален ACL пира (match address)', 2);
+          return;
+        }
+        const mySpi = newSpi(this);
+        const sa = { peer, local: pkt.dst, ifc: inIf.name, map: inIf.cryptoMap, entry, mySpi, peerSpi: d.spi, policy: p1.policy, transforms: ts, encaps: 0, decaps: 0, created: this.net.time, seqOut: 0 };
+        const old = this.ike.sas.get(peer);
+        if (old) this.ike.bySpi.delete(old.mySpi);
+        this.ike.sas.set(peer, sa);
+        this.ike.bySpi.set(mySpi, sa);
+        this.ike.failed.delete(peer);
+        dbg(this, 'crypto ipsec', 'IPSEC(create_sa): sa created, (sa) sa_dest= ' + U.ipStr(peer) + ', sa_proto= 50, sa_spi= 0x' + (d.spi >>> 0).toString(16).toUpperCase() + ', sa_trans= ' + ts.join(' '));
+        reply({ isakmp: 'QM2', spi: mySpi, transforms: ts }, 'IKE фаза 2 (2/3): принимаю transform-set ' + ts.join(' ') + ', мой SPI 0x' + mySpi.toString(16));
+        return;
+      }
+      case 'QM3':
+        this.note('IKE фаза 2 с ' + U.ipStr(peer) + ' завершена: IPsec SA готов', null, 'accept');
+        return;
+      default:
     }
-    const mySpi = newSpi(this);
-    const sa = { peer: pkt.src, local: pkt.dst, ifc: inIf.name, map: inIf.cryptoMap, entry, mySpi, peerSpi: d.spi, policy, transforms: ts, encaps: 0, decaps: 0, created: this.net.time, seqOut: 0 };
-    const old = this.ike.sas.get(pkt.src);
-    if (old) this.ike.bySpi.delete(old.mySpi);
-    this.ike.sas.set(pkt.src, sa);
-    this.ike.bySpi.set(mySpi, sa);
-    reply({ isakmp: 'OK', spi: mySpi, policy, transforms: ts }, 'IKE: согласовано (политика ' + policy.prio + ', ' + ts.join(' ') + ') — SA с ' + U.ipStr(pkt.src));
   };
 
   IpNode.prototype.espSend = function (sa, pkt, opts) {
@@ -463,22 +605,21 @@
         sets: c ? JSON.parse(JSON.stringify(c.sets)) : {},
         maps: c ? Object.fromEntries(Object.entries(c.maps).map(([k, list]) => [k, list.map((e) => ({ seq: e.seq, peer: e.peer != null ? U.ipStr(e.peer) : null, ts: e.ts, acl: e.acl }))])) : {},
         groups: c ? JSON.parse(JSON.stringify(c.groups)) : {},
-        aaa: c ? !!c.aaa : false,
         pools,
       };
     },
     load(d, c) {
       d.crypto = null;
       d.pools = {};
+      d.legacyAaa = !!(c && c.aaa); // файлы 1.2: aaa new-model хранился здесь (теперь — aaa.js)
       if (!c) return;
-      if ((c.policies || []).length || (c.keys || []).length || Object.keys(c.sets || {}).length || Object.keys(c.maps || {}).length || Object.keys(c.groups || {}).length || c.aaa) {
+      if ((c.policies || []).length || (c.keys || []).length || Object.keys(c.sets || {}).length || Object.keys(c.maps || {}).length || Object.keys(c.groups || {}).length) {
         d.crypto = {
           policies: (c.policies || []).map((p) => Object.assign(defaultPolicy(p.prio), p)),
           keys: (c.keys || []).map((k) => ({ key: String(k.key), addr: U.parseIp(k.addr) || 0 })),
           sets: c.sets || {},
           maps: Object.fromEntries(Object.entries(c.maps || {}).map(([k, list]) => [k, (list || []).map((e) => ({ seq: Number(e.seq) || 10, peer: e.peer ? U.parseIp(e.peer) : null, ts: e.ts || null, acl: e.acl || null }))])),
           groups: c.groups || {},
-          aaa: !!c.aaa,
         };
       }
       for (const [k, v] of Object.entries(c.pools || {})) {
@@ -492,6 +633,27 @@
   /* ================= описание пакетов ================= */
 
   const innerText = (p) => (p ? U.ipStr(p.src) + ' → ' + U.ipStr(p.dst) + ' ' + p.proto + (p.payload && p.payload.type ? ' ' + p.payload.type : '') : '');
+
+  const ISA_PHASE = { MM1: '1 — Main Mode, сообщение 1 из 6', MM2: '1 — Main Mode, 2 из 6', MM3: '1 — Main Mode, 3 из 6', MM4: '1 — Main Mode, 4 из 6', MM5: '1 — Main Mode, 5 из 6', MM6: '1 — Main Mode, 6 из 6',
+    QM1: '2 — Quick Mode, сообщение 1 из 3', QM2: '2 — Quick Mode, 2 из 3', QM3: '2 — Quick Mode, 3 из 3' };
+  function isaText(d) {
+    switch (d.isakmp) {
+      case 'MM1': return 'фаза 1 (1/6): предложение политик ISAKMP';
+      case 'MM2': return 'фаза 1 (2/6): выбрана политика ' + (d.policy ? d.policy.prio : '?');
+      case 'MM3': return 'фаза 1 (3/6): ключ Диффи — Хеллмана и nonce';
+      case 'MM4': return 'фаза 1 (4/6): ответный ключ DH и nonce';
+      case 'MM5': return 'фаза 1 (5/6): аутентификация (зашифровано)';
+      case 'MM6': return 'фаза 1 (6/6): пир аутентифицирован, ISAKMP SA готов';
+      case 'QM1': return 'фаза 2 (1/3): предложение transform-set и SPI';
+      case 'QM2': return 'фаза 2 (2/3): согласие и SPI ответчика';
+      case 'QM3': return 'фаза 2 (3/3): подтверждение, IPsec SA готов';
+      case 'NOTIFY': return 'отказ (фаза ' + (d.phase || 1) + '): ' + d.text;
+      case 'CLIENT': return 'вход VPN-клиента (' + d.user + ')';
+      case 'CLIENT-OK': return 'клиенту выдан адрес ' + U.ipStr(d.ip);
+      case 'CLIENT-BYE': return 'VPN-клиент отключается';
+      default: return String(d.isakmp);
+    }
+  }
 
   P.register({
     protocols: { GRE: { label: 'GRE', color: '#be185d' }, ESP: { label: 'IPsec ESP', color: '#b91c1c' }, ISAKMP: { label: 'ISAKMP (IKE)', color: '#9f1239' } },
@@ -511,8 +673,7 @@
       if (p.proto === 'ESP') return 'IPsec ESP, SPI 0x' + (p.payload.spi >>> 0).toString(16) + ', ' + route + ' — данные зашифрованы';
       const d = p.proto === 'UDP' && p.payload && p.payload.data;
       if (d && d.isakmp) {
-        const k = { NEGOTIATE: 'предложение политик и SA', OK: 'согласие, SA установлен', NOTIFY: 'отказ: ' + d.text, CLIENT: 'вход VPN-клиента (' + d.user + ')', 'CLIENT-OK': 'клиенту выдан адрес ' + U.ipStr(d.ip), 'CLIENT-BYE': 'VPN-клиент отключается' }[d.isakmp] || d.isakmp;
-        return 'ISAKMP: ' + k + ', ' + route;
+        return 'ISAKMP: ' + isaText(d) + ', ' + route;
       }
       return null;
     },
@@ -524,7 +685,13 @@
         out.push({ title: 'ESP (IPsec)', fields: [['SPI', '0x' + (p.payload.spi >>> 0).toString(16)], ['Номер', String(p.payload.seq)], ['Преобразования', (p.payload.transforms || []).join(' ')], ['Содержимое', 'зашифровано — снаружи его не видно'], ['Внутри (видно только в NetLab)', innerText(p.payload.inner)]] });
       } else if (p.proto === 'UDP' && p.payload && p.payload.data && p.payload.data.isakmp) {
         const d = p.payload.data;
-        const fields = [['Сообщение', d.isakmp]];
+        const fields = [['Сообщение', d.isakmp], ['Смысл', isaText(d)]];
+        if (ISA_PHASE[d.isakmp]) fields.push(['Фаза IKE', ISA_PHASE[d.isakmp]]);
+        if (d.policy) fields.push(['Выбранная политика', d.policy.prio + ': ' + d.policy.enc + '/' + d.policy.hash + '/' + d.policy.auth + '/DH' + d.policy.group]);
+        if (d.nonce) fields.push(['Ключ DH (группа ' + d.group + ') и nonce', d.nonce]);
+        if (d.hash) fields.push(['Содержимое', 'зашифровано общим ключом фазы 1 (SKEYID_e): ID ' + U.ipStr(d.id) + ' и хэш pre-shared key']);
+        if (d.spi != null && /^QM/.test(d.isakmp)) fields.push(['SPI', '0x' + (d.spi >>> 0).toString(16)]);
+        if (d.proxy) fields.push(['Защищаемый трафик', U.ipStr(d.proxy.src) + ' → ' + U.ipStr(d.proxy.dst)]);
         if (d.policies) fields.push(['Политики', d.policies.map((x) => x.prio + ': ' + x.enc + '/' + x.hash + '/' + x.auth + '/DH' + x.group).join('; ')]);
         if (d.transforms) fields.push(['Transform-set', d.transforms.join(' ')]);
         if (d.key != null) fields.push(['Pre-shared key', '•••• (передаётся в виде хэша)']);
@@ -612,11 +779,6 @@
 
   X.config.push((dev, s, a, neg, io, C) => {
     const isR = dev.type === 'router';
-    if (C.kw(a[0], 'aaa', 3)) {
-      if (!isR) return false;
-      C.withMutate(io, () => { cfg(dev).aaa = !neg || !C.kw(a[1], 'new-model', 1); if (neg && C.kw(a[1], 'new-model', 1)) cfg(dev).aaa = false; });
-      return true;
-    }
     if (C.kw(a[0], 'ip', 2) && C.kw(a[1], 'local', 3) && C.kw(a[2], 'pool', 1)) {
       if (!isR) return false;
       if (neg) { C.withMutate(io, () => { delete dev.localPools()[a[3]]; }); return true; }
@@ -745,7 +907,6 @@
   X.running.global.push((dev) => {
     const c = dev.crypto;
     const L = [];
-    if (c && c.aaa) L.push('aaa new-model', '!');
     if (!c) return L;
     for (const p of c.policies.slice().sort((x, y) => x.prio - y.prio)) {
       L.push('crypto isakmp policy ' + p.prio);
@@ -791,10 +952,15 @@
     if (C.kw(a[1], 'isakmp', 1) && (C.kw(a[2], 'sa', 1) || !a[2])) {
       io.out('IPv4 Crypto ISAKMP SA');
       io.out('dst             src             state          conn-id slot status');
-      let id = 1001;
-      for (const sa of dev.ike.sas.values()) io.out(C.pad(U.ipStr(sa.peer), 16) + C.pad(U.ipStr(sa.local), 16) + C.pad('QM_IDLE', 15) + C.pad(String(id++), 8) + C.pad('0', 5) + 'ACTIVE');
-      for (const [peer, f] of dev.ike.failed) io.out(C.pad(U.ipStr(peer), 16) + C.pad('', 16) + C.pad('MM_NO_STATE', 15) + C.pad('0', 8) + C.pad('0', 5) + 'ACTIVE (deleted)  ' + f.text);
+      let id = 2001;
+      for (const x of dev.ike.p1.values()) {
+        const dst = x.role === 'initiator' ? x.peer : x.local;
+        const src = x.role === 'initiator' ? x.local : x.peer;
+        io.out(C.pad(U.ipStr(dst), 16) + C.pad(U.ipStr(src), 16) + C.pad(x.state, 15) + C.pad(String(x.connId), 8) + C.pad('0', 5) + 'ACTIVE');
+      }
+      for (const [peer, f] of dev.ike.failed) if (f.phase !== 2) io.out(C.pad(U.ipStr(peer), 16) + C.pad('', 16) + C.pad('MM_NO_STATE', 15) + C.pad('0', 8) + C.pad('0', 5) + 'ACTIVE (deleted)  ' + f.text);
       for (const cl of dev.vpnClients.values()) io.out(C.pad(U.ipStr(cl.local), 16) + C.pad(U.ipStr(cl.real), 16) + C.pad('QM_IDLE', 15) + C.pad(String(id++), 8) + C.pad('0', 5) + 'ACTIVE (EzVPN ' + cl.user + ' ' + U.ipStr(cl.vip) + ')');
+      for (const [peer, f] of dev.ike.failed) if (f.phase === 2) io.out('% Фаза 1 с ' + U.ipStr(peer) + ' прошла, но фаза 2 (IPsec) не согласована: ' + f.text);
       return true;
     }
     if (C.kw(a[1], 'isakmp', 1) && C.kw(a[2], 'policy', 1)) {
@@ -822,6 +988,26 @@
         io.out('');
       }
       if (!dev.ike.sas.size) io.out('No SAs found (защищённый канал ещё не установлен — отправьте трафик, подходящий под ACL crypto map)');
+      for (const [peer, f] of dev.ike.failed) io.out('% С ' + U.ipStr(peer) + ' не согласована фаза ' + f.phase + ': ' + f.text);
+      return true;
+    }
+    if (C.kw(a[1], 'session', 1)) {
+      io.out('Crypto session current status');
+      const peers = new Set([...dev.ike.sas.keys(), ...[...dev.ike.p1.values()].map((x) => x.peer), ...dev.ike.pending.keys(), ...dev.ike.failed.keys()]);
+      for (const peer of peers) {
+        const sa = dev.ike.sas.get(peer);
+        const p1 = p1Ready(dev, peer) || dev.ike.p1.get(p1Key(peer, 'initiator')) || dev.ike.p1.get(p1Key(peer, 'responder'));
+        const st = sa && p1 && p1.state === 'QM_IDLE' ? 'UP-ACTIVE' : sa ? 'UP-NO-IKE' : p1 && p1.state === 'QM_IDLE' ? 'UP-IDLE' : dev.ike.pending.has(peer) ? 'DOWN-NEGOTIATING' : 'DOWN';
+        const ifc = sa ? sa.ifc : (dev.ifaces.find((x) => x.cryptoMap) || {}).name || '?';
+        io.out('');
+        io.out('Interface: ' + ifc);
+        io.out('Session status: ' + st);
+        io.out('Peer: ' + U.ipStr(peer) + ' port 500');
+        if (p1) io.out('  IKEv1 SA: local ' + U.ipStr(p1.local) + '/500 remote ' + U.ipStr(peer) + '/500 ' + (p1.state === 'QM_IDLE' ? 'Active' : 'Negotiating (' + p1.state + ')'));
+        if (sa) io.out('  IPSEC FLOW: crypto map ' + sa.map + ', ACL ' + (sa.entry && sa.entry.acl) + '\n        Active SAs: 2, origin: crypto map');
+        const fl = dev.ike.failed.get(peer);
+        if (fl) io.out('  % фаза ' + fl.phase + ' не согласована: ' + fl.text);
+      }
       return true;
     }
     if (C.kw(a[1], 'map', 1)) {
@@ -842,6 +1028,8 @@
 
   X.exec.push((dev, s, t, io, line, C) => {
     if (s.mode !== 'exec' || !C.kw(t[0], 'clear', 3) || !C.kw(t[1], 'crypto', 2)) return null;
+    // clear crypto isakmp — фаза 1; clear crypto sa — фаза 2 (IPsec SA)
+    if (C.kw(t[2], 'isakmp', 1)) { dev.ike.p1.clear(); dev.ike.failed.clear(); return { handled: true }; }
     dev.ike.sas.clear();
     dev.ike.bySpi.clear();
     dev.ike.failed.clear();
@@ -851,5 +1039,5 @@
   X.tree.config = (X.tree.config || []).concat(['crypto isakmp policy WORD', 'crypto isakmp key WORD address A.B.C.D', 'crypto isakmp client configuration group WORD',
     'crypto ipsec transform-set WORD esp-aes esp-sha-hmac', 'crypto map WORD WORD ipsec-isakmp', 'ip local pool WORD A.B.C.D A.B.C.D', 'aaa new-model', 'interface tunnel WORD']);
   X.tree.if = (X.tree.if || []).concat(['crypto map WORD', 'tunnel source WORD', 'tunnel destination A.B.C.D', 'tunnel mode gre ip']);
-  X.tree.exec = (X.tree.exec || []).concat(['show crypto isakmp sa', 'show crypto isakmp policy', 'show crypto ipsec sa', 'show crypto map', 'clear crypto sa']);
+  X.tree.exec = (X.tree.exec || []).concat(['show crypto isakmp sa', 'show crypto isakmp policy', 'show crypto ipsec sa', 'show crypto map', 'show crypto session', 'clear crypto sa', 'clear crypto isakmp']);
 })(globalThis.NetLab = globalThis.NetLab || {});

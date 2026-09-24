@@ -136,8 +136,10 @@
     box.appendChild(DW.form(...rows));
     if (p.media === 'wireless') wifiClientForm(app, dev, box);
     const v6live = DW.hostIpv6Form ? DW.hostIpv6Form(app, dev, box) : null;
+    const extras = (DW.hostIfaceExtras || []).map((fn) => fn(app, dev, box)).filter(Boolean);
     return () => {
       if (v6live) v6live();
+      for (const x of extras) x();
       const d = app.net.getDevice(dev.id);
       if (!d) return;
       status.style.display = d.iface.dhcp || d.conflict ? '' : 'none';
@@ -149,18 +151,29 @@
   function wifiClientForm(app, dev, box) {
     const w = dev.wifi;
     const ssid = h('input', { class: 'inp', value: w.ssid || '', placeholder: 'имя сети' });
-    const sec = DW.select([['open', 'Отключена (открытая сеть)'], ['wpa2', 'WPA2-PSK']], w.security || 'open');
+    const sec = DW.select([['open', 'Отключена (открытая сеть)'], ['wpa2', 'WPA2-PSK'], ['wpa2-ent', 'WPA2-Enterprise']], w.security || 'open');
     const key = h('input', { class: 'inp', type: 'password', value: w.key || '', placeholder: 'пароль сети (8–63 символа)' });
+    const user = h('input', { class: 'inp', value: w.user || '', placeholder: 'имя пользователя (RADIUS)', spellcheck: 'false' });
+    const pass = h('input', { class: 'inp', type: 'password', value: w.pass || '', placeholder: 'пароль пользователя' });
     const e = err();
     const st = h('div', { class: 'hint-box', style: { marginTop: '8px' } });
-    const save = () => DW.apply(app, () => app.net.getDevice(dev.id).setWifi({ ssid: ssid.value.trim(), security: sec.value, key: key.value }), e, true);
+    const save = () => DW.apply(app, () => app.net.getDevice(dev.id).setWifi({ ssid: ssid.value.trim(), security: sec.value, key: sec.value === 'wpa2' ? key.value : '', user: user.value.trim(), pass: pass.value }), e, true);
+    const keyRows = [lbl('Ключ WPA2'), key];
+    const entRows = [lbl('User ID'), user, lbl('Пароль'), pass];
+    const showSec = () => {
+      for (const x of keyRows) x.style.display = sec.value === 'wpa2' ? '' : 'none';
+      for (const x of entRows) x.style.display = sec.value === 'wpa2-ent' ? '' : 'none';
+    };
+    sec.addEventListener('change', showSec);
     box.appendChild(DW.section('Беспроводная сеть'));
-    box.appendChild(DW.form(lbl('SSID'), ssid, lbl('Аутентификация'), sec, lbl('Ключ WPA2'), key,
+    box.appendChild(DW.form(lbl('SSID'), ssid, lbl('Аутентификация'), sec, ...keyRows, ...entRows,
       h('span'), h('div', { class: 'row' }, h('button', { class: 'btn primary small', onClick: save }, 'Подключить'), e)));
+    showSec();
     box.appendChild(st);
     const upd = () => {
-      const r = app.net.wirelessStatus(app.net.getDevice(dev.id));
-      st.textContent = r && r.ap ? '✓ Подключено к «' + r.ap.wifi.ssid + '» через ' + r.ap.name : '✕ Нет подключения: ' + (r ? r.reason : '—');
+      const d0 = app.net.getDevice(dev.id);
+      const r = app.net.wirelessStatus(d0);
+      st.textContent = r && r.ap ? '✓ Подключено к «' + d0.wifi.ssid + '» через ' + r.ap.name : '✕ Нет подключения: ' + (r ? r.reason : '—');
       st.className = 'hint-box' + (r && r.ap ? '' : ' warn');
     };
     upd();
@@ -240,8 +253,16 @@
       rows.push(lbl('Шлюз по умолчанию'), gw);
       if (dev.l3) rows.push(lbl('IP-маршрутизация'), UI.toggle('ip routing', dev.ipRouting, (on) => DW.iosApply(app, app.net.getDevice(dev.id), [on ? 'ip routing' : 'no ip routing'], e)));
       const stp = DW.select(Array.from({ length: 16 }, (_, k) => [String(k * 4096), String(k * 4096) + (k === 8 ? ' (по умолчанию)' : '')]), String(dev.stpPriority),
-        (v) => DW.iosApply(app, app.net.getDevice(dev.id), ['spanning-tree vlan 1 priority ' + v], e));
-      rows.push(lbl('Приоритет STP'), stp);
+        (v) => DW.iosApply(app, app.net.getDevice(dev.id), ['spanning-tree vlan 1-4094 priority ' + v], e));
+      rows.push(lbl('Приоритет STP (все VLAN)'), stp);
+      rows.push(lbl('Режим STP'), DW.select([['pvst', 'PVST+'], ['rapid-pvst', 'Rapid PVST+']], dev.stpMode || 'pvst', (v) => DW.iosApply(app, app.net.getDevice(dev.id), ['spanning-tree mode ' + v], e)));
+      const vtp = (NS.l2 && NS.l2.vtpCfg(dev)) || { mode: 'server', domain: '', password: '', revision: 0 };
+      const dom = h('input', { class: 'inp', value: vtp.domain, placeholder: 'домен VTP (пусто — NULL)', spellcheck: 'false' });
+      DW.commitOnChange(dom, () => DW.iosApply(app, app.net.getDevice(dev.id), [dom.value.trim() ? 'vtp domain ' + dom.value.trim() : 'no vtp domain'], e));
+      const vpw = h('input', { class: 'inp', value: vtp.password, placeholder: 'пароль VTP' });
+      DW.commitOnChange(vpw, () => DW.iosApply(app, app.net.getDevice(dev.id), [vpw.value ? 'vtp password ' + vpw.value : 'no vtp password'], e));
+      rows.push(lbl('VTP'), h('div', { class: 'row' }, DW.select([['server', 'Server'], ['client', 'Client'], ['transparent', 'Transparent'], ['off', 'Off']], vtp.mode, (v) => DW.iosApply(app, app.net.getDevice(dev.id), ['vtp mode ' + v], e), { style: { width: '140px' } }), dom, vpw,
+        h('span', { class: 'muted' }, 'ревизия ' + vtp.revision)));
     }
     rows.push(h('div', { class: 'full' }, e));
     box.appendChild(DW.form(...rows));
@@ -419,8 +440,9 @@
   function routerConfig(app, id, st) {
     return (body) => {
       const dev = app.net.getDevice(id);
-      const items = [{ group: 'GLOBAL' }, { id: 'global', label: 'Настройки' }, { group: 'ROUTING' }, { id: 'static', label: 'Статические' }, { id: 'rip', label: 'RIP' }, { id: 'ospf', label: 'OSPF' },
-        { group: 'СЛУЖБЫ' }, { id: 'dhcp', label: 'DHCP' }].concat((DW.routerPages || []).map((x) => ({ id: 'x:' + x.id, label: x.label }))).concat([{ group: 'INTERFACE' }]);
+      const pages = (grp) => (DW.routerPages || []).filter((x) => (x.group === 'routing') === grp).map((x) => ({ id: 'x:' + x.id, label: x.label }));
+      const items = [{ group: 'GLOBAL' }, { id: 'global', label: 'Настройки' }, { group: 'ROUTING' }, { id: 'static', label: 'Статические' }, { id: 'rip', label: 'RIP' }, { id: 'ospf', label: 'OSPF' }].concat(pages(true),
+        [{ group: 'СЛУЖБЫ' }, { id: 'dhcp', label: 'DHCP' }], pages(false), [{ group: 'INTERFACE' }]);
       for (const f of dev.ifaces) if (!f.runtime) items.push({ id: 'if:' + f.name, label: UI.shortIf(f.name) === f.name ? f.name : f.name, title: f.name });
       items.push({ id: 'addif', label: '+ Loopback' });
       let live = null;
@@ -473,7 +495,9 @@
       rows.push(lbl('Режим'), h('div', null, h('b', null, 'маршрутизируемый порт (no switchport)'), ' ', h('button', { class: 'btn small outline', onClick: () => run(['switchport']) }, 'Вернуть в коммутацию')));
       rows.push(lbl('IP-адрес'), ipI, lbl('Маска'), maskI);
     } else {
-      rows.push(lbl('Режим'), DW.radio('pm-' + dev.id + '-' + i, [['access', 'Access'], ['trunk', 'Trunk']], p.mode, (v) => run(['switchport mode ' + v])));
+      const cfg = p.cfgMode || p.mode;
+      rows.push(lbl('Режим'), h('div', null, DW.select([['access', 'Access'], ['trunk', 'Trunk'], ['dynamic auto', 'Dynamic auto (DTP)'], ['dynamic desirable', 'Dynamic desirable (DTP)']], cfg, (v) => run(['switchport mode ' + v]), { style: { width: '220px' } }),
+        cfg !== 'access' && cfg !== 'trunk' ? h('span', { class: 'muted', style: { marginLeft: '8px' } }, 'сейчас: ' + (p.mode === 'trunk' ? 'trunk (согласован DTP)' : 'access')) : null));
       const vl = [...dev.vlans.entries()].sort((a, b) => a[0] - b[0]);
       if (p.mode === 'access') {
         rows.push(lbl('VLAN'), DW.select(vl.map(([v, n]) => [String(v), v + ' — ' + n]).concat(dev.vlans.has(p.vlan) ? [] : [[String(p.vlan), p.vlan + ' — (не создан!)']]), String(p.vlan), (v) => run(['switchport access vlan ' + v])));
@@ -500,7 +524,19 @@
         if (ps.enabled) rows.push(lbl('Безопасные MAC'), h('div', { class: 'mono', style: { fontSize: '12px' } }, ps.macs.length ? ps.macs.map((m) => m.mac + (m.sticky ? ' (sticky)' : '')).join(', ') : '—', ps.violations ? h('span', { style: { color: 'var(--warn)' } }, ' · нарушений: ' + ps.violations) : null));
       }
       if (dev.l3) rows.push(lbl('3-й уровень'), h('button', { class: 'btn small outline', onClick: () => run(['no switchport']) }, 'Сделать маршрутизируемым (no switchport)'));
-      rows.push(lbl('STP'), h('div', { class: 'muted' }, p.stpRole ? ({ root: 'корневой порт', designated: 'назначенный', alternate: 'альтернативный — заблокирован' }[p.stpRole]) : 'нет (порт не активен)'));
+      const chan = p.chan;
+      const chanMode = DW.select([['', 'нет'], ['active', 'LACP active'], ['passive', 'LACP passive'], ['desirable', 'PAgP desirable'], ['auto', 'PAgP auto'], ['on', 'on (без протокола)']], chan ? chan.mode : '', (v) => {
+        const g = chan ? chan.group : Math.max(0, ...dev.ports.filter((x) => x.chan).map((x) => x.chan.group)) + 1;
+        run([v ? 'channel-group ' + g + ' mode ' + v : 'no channel-group']);
+      }, { style: { width: '180px' } });
+      rows.push(lbl('EtherChannel'), h('div', { class: 'row' }, chanMode, chan ? h('span', { class: 'muted' }, 'Po' + chan.group + ' · ' + ({ P: 'в канале', I: 'не собран (сосед не согласовал)', s: 'приостановлен (настройки портов различаются)', D: 'порт выключен' }[p.chanState] || '—')) : null));
+      rows.push(lbl('PortFast / BPDU Guard'), h('div', { class: 'row' },
+        UI.toggle('PortFast', !!p.portfast, (on) => run([on ? 'spanning-tree portfast' : 'no spanning-tree portfast'])),
+        UI.toggle('BPDU Guard', p.bpduguard === true, (on) => run([on ? 'spanning-tree bpduguard enable' : 'no spanning-tree bpduguard'])),
+        p.errDisabled ? h('span', { class: 'st fail' }, 'err-disabled' + (p.errReason === 'bpduguard' ? ' (BPDU Guard)' : '')) : null));
+      const roles = p.stpRoleV ? Object.entries(p.stpRoleV).map(([v, r]) => 'VLAN ' + v + ': ' + ({ root: 'корневой', designated: 'назначенный', alternate: 'альтернативный (BLK)', backup: 'резервный (BLK)' }[r])) : [];
+      rows.push(lbl('STP'), h('div', { class: 'muted' }, roles.length ? roles.join('; ') : 'нет (порт не активен)'));
+      if (DW.switchPortExtra) rows.push(...DW.switchPortExtra(app, dev, i, run));
     }
     rows.push(h('div', { class: 'full' }, e));
     box.appendChild(DW.form(...rows));
@@ -572,7 +608,7 @@
   function switchConfig(app, id, st) {
     return (body) => {
       const dev = app.net.getDevice(id);
-      const items = [{ group: 'GLOBAL' }, { id: 'global', label: 'Настройки' }, { id: 'ports', label: 'Все порты' }, { group: 'SWITCHING' }, { id: 'vlan', label: 'База VLAN' }];
+      const items = [{ group: 'GLOBAL' }, { id: 'global', label: 'Настройки' }, { id: 'ports', label: 'Все порты' }].concat((DW.switchPages || []).map((x) => ({ id: 'x:' + x.id, label: x.label })), [{ group: 'SWITCHING' }, { id: 'vlan', label: 'База VLAN' }]);
       if (dev.l3) items.push({ group: 'ROUTING' }, { id: 'static', label: 'Статические' }, { id: 'rip', label: 'RIP' }, { id: 'ospf', label: 'OSPF' });
       items.push({ group: 'INTERFACE' });
       dev.ports.forEach((p, i) => { if (NS.Network.isData(p)) items.push({ id: 'p:' + i, label: UI.shortIf(p.name), title: p.name }); });
@@ -588,6 +624,7 @@
         else if (sec === 'static') staticRoutes(app, d, box);
         else if (sec === 'rip') ripSection(app, d, box);
         else if (sec === 'ospf') ospfSection(app, d, box);
+        else if (sec.startsWith('x:')) { const pg = DW.switchPages.find((x) => 'x:' + x.id === sec); if (pg) live = pg.render(app, d, box) || null; }
         else if (sec === 'addsvi') {
           const n = h('input', { class: 'inp', type: 'number', min: 1, max: 4094, placeholder: 'VLAN', style: { width: '110px' } });
           const e = err();
@@ -623,13 +660,33 @@
     const e = err();
     const ssid = h('input', { class: 'inp', value: w.ssid });
     const ch = DW.select(Array.from({ length: 11 }, (_, k) => [String(k + 1), String(k + 1)]), String(w.channel || 6));
-    const sec = DW.select([['open', 'Отключена (открытая сеть)'], ['wpa2', 'WPA2-PSK']], w.security || 'open');
+    const ent = dev.type === 'wrouter';
+    const sec = DW.select([['open', 'Отключена (открытая сеть)'], ['wpa2', 'WPA2-PSK']].concat(ent ? [['wpa2-ent', 'WPA2-Enterprise (RADIUS)']] : []), w.security || 'open');
     const key = h('input', { class: 'inp', type: 'password', value: w.key || '', placeholder: 'от 8 до 63 символов' });
-    const save = () => DW.apply(app, () => app.net.getDevice(dev.id).setWifi({ ssid: ssid.value, channel: Number(ch.value), security: sec.value, key: key.value }), e, true);
+    const rIp = DW.ipInput(w.radius && w.radius.ip != null ? U.ipStr(w.radius.ip) : '', 'адрес RADIUS-сервера');
+    const rKey = h('input', { class: 'inp', value: (w.radius && w.radius.key) || '', placeholder: 'общий ключ (shared secret)' });
+    const save = () => DW.apply(app, () => {
+      const cfg = { ssid: ssid.value, channel: Number(ch.value), security: sec.value, key: sec.value === 'wpa2' ? key.value : '' };
+      if (sec.value === 'wpa2-ent') {
+        const r = DW.readIp(rIp, true);
+        if (!r.ok) throw new Error('RADIUS: ' + r.err);
+        if (!rKey.value.trim()) throw new Error('Укажите общий ключ RADIUS');
+        cfg.radius = { ip: r.v, key: rKey.value.trim() };
+      }
+      app.net.getDevice(dev.id).setWifi(cfg);
+    }, e, true);
+    const pskRows = [lbl('Пароль (PSK)'), key];
+    const entRows = ent ? [lbl('RADIUS-сервер'), rIp, lbl('Общий ключ'), rKey] : [];
+    const showSec = () => {
+      for (const x of pskRows) x.style.display = sec.value === 'wpa2' ? '' : 'none';
+      for (const x of entRows) x.style.display = sec.value === 'wpa2-ent' ? '' : 'none';
+    };
+    sec.addEventListener('change', showSec);
     box.appendChild(DW.form(
       lbl('Радио'), UI.toggle(w.enabled !== false ? 'Включено' : 'Выключено', w.enabled !== false, (on) => DW.apply(app, () => app.net.getDevice(dev.id).setWifi({ enabled: on }), e)),
-      lbl('SSID'), ssid, lbl('Канал 2,4 ГГц'), ch, lbl('Аутентификация'), sec, lbl('Пароль (PSK)'), key,
+      lbl('SSID'), ssid, lbl('Канал 2,4 ГГц'), ch, lbl('Аутентификация'), sec, ...pskRows, ...entRows,
       h('span'), h('div', { class: 'row' }, h('button', { class: 'btn primary small', onClick: save }, 'Сохранить'), e)));
+    showSec();
     const cl = dev.wirelessClients();
     box.appendChild(DW.section('Подключённые клиенты'));
     box.appendChild(h('table', { class: 'tbl' }, h('tr', null, h('th', null, 'Устройство'), h('th', null, 'IP'), h('th', null, 'MAC')),

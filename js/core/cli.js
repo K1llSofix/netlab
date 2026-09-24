@@ -4,16 +4,19 @@
   'use strict';
 
   function isIos(dev) { return !!dev.ios && dev.type !== 'wrouter'; }
+  const isAsa = (dev) => dev.type === 'asa' && !!NS.cliAsa;
 
   NS.cli = {
     isIos,
 
     createSession(dev, opts) {
+      if (isAsa(dev)) return NS.cliAsa.createSession(dev, opts);
       if (isIos(dev)) return NS.cliIos.createSession(dev, opts);
       return { mode: 'host', pending: null, remote: null, history: [], stage: null };
     },
 
     prompt(dev, s) {
+      if (isAsa(dev)) return NS.cliAsa.prompt(dev, s);
       if (isIos(dev)) return NS.cliIos.prompt(dev, s);
       if (s.remote) return s.remote.prompt || '';
       if (s.pending) return s.pending.prompt;
@@ -43,6 +46,7 @@
           session.pending = null;
           return p.handle(line) || null;
         }
+        if (isAsa(dev)) return NS.cliAsa.exec(dev, session, line, safeIo);
         if (isIos(dev)) return NS.cliIos.exec(dev, session, line, safeIo);
         return NS.cliHost.exec(dev, session, line, safeIo);
       } catch (e) {
@@ -55,10 +59,11 @@
     /** Tab — дописать команду. */
     complete(dev, s, line) {
       if (s.remote || s.pending) return line;
+      if (isAsa(dev)) return NS.cliAsa.complete(dev, s, line);
       return isIos(dev) ? NS.cliIos.complete(dev, s, line) : NS.cliHost.complete(line);
     },
 
-    runningConfig(dev) { return NS.cliIos.runningConfig(dev); },
+    runningConfig(dev) { return isAsa(dev) ? NS.cliAsa.runningConfig(dev) : NS.cliIos.runningConfig(dev); },
     parseIfName(dev, s) { return NS.cliIos.parseIfName(dev, s); },
   };
 })(globalThis.NetLab = globalThis.NetLab || {});

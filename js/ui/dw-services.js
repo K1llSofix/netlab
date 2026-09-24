@@ -270,7 +270,7 @@
       flush: true,
       live: null,
       render(body) {
-        const items = [{ group: 'SERVICES' }, { id: 'http', label: 'HTTP' }, { id: 'dhcp', label: 'DHCP' }, { id: 'tftp', label: 'TFTP' }, { id: 'dns', label: 'DNS' }, { id: 'email', label: 'EMAIL' }, { id: 'iot', label: 'IoT' }];
+        const items = [{ group: 'SERVICES' }, { id: 'http', label: 'HTTP' }, { id: 'dhcp', label: 'DHCP' }, { id: 'tftp', label: 'TFTP' }, { id: 'dns', label: 'DNS' }, { id: 'email', label: 'EMAIL' }, { id: 'ftp', label: 'FTP' }, { id: 'syslog', label: 'SYSLOG' }, { id: 'ntp', label: 'NTP' }, { id: 'aaa', label: 'AAA' }, { id: 'iot', label: 'IoT' }];
         tab.live = null;
         DW.sidebarLayout(body, items, st, 'sec', (sec, box) => {
           const dev = app.net.getDevice(id);
@@ -281,6 +281,10 @@
           else if (sec === 'dns') dnsSection(app, id, box);
           else if (sec === 'email') emailSection(app, id, box);
           else if (sec === 'iot') { tab.live = DW.iotServerSection(app, dev, box); tab.live(); }
+          else if (sec === 'ftp') { tab.live = DW.ftpSection(app, dev, box); if (tab.live) tab.live(); }
+          else if (sec === 'syslog') { tab.live = DW.syslogSection(app, dev, box); if (tab.live) tab.live(); }
+          else if (sec === 'ntp') { tab.live = DW.ntpSection(app, dev, box); if (tab.live) tab.live(); }
+          else if (sec === 'aaa') { tab.live = DW.aaaSection(app, dev, box); if (tab.live) tab.live(); }
           else tftpSection(app, id, box);
         });
       },

@@ -43,7 +43,8 @@
     const gwI = h('input', { class: 'inp mono', value: dev.v6cfg().gw != null ? ip6.str(dev.v6cfg().gw) : '', placeholder: 'FE80::1 или 2001:DB8:1::1', spellcheck: 'false' });
     const ll = h('div', { class: 'mono' });
     const auto = h('div', { class: 'mono' });
-    const staticBox = h('div', { style: { display: v.autoconfig ? 'none' : '' } }, DW.form(lbl('IPv6-адрес'), h('div', { class: 'row' }, addrI, h('span', null, '/'), plenI), lbl('Шлюз IPv6'), gwI,
+    const mode0 = v.dhcp ? 'dhcp' : v.autoconfig ? 'auto' : 'static';
+    const staticBox = h('div', { style: { display: mode0 !== 'static' ? 'none' : '' } }, DW.form(lbl('IPv6-адрес'), h('div', { class: 'row' }, addrI, h('span', null, '/'), plenI), lbl('Шлюз IPv6'), gwI,
       h('span'), h('button', { class: 'btn primary small', onClick: () => {
         const a = read6(addrI, false);
         if (!a.ok) { e.textContent = a.err; return; }
@@ -52,8 +53,8 @@
         DW.apply(app, () => app.net.getDevice(dev.id).setIpv6Host('static', a.v, Number(plenI.value) || 64, g.v), e, true);
       } }, 'Применить')));
     box.append(DW.section('IPv6'), DW.form(
-      lbl('IPv6-конфигурация'), DW.radio('v6-' + dev.id, [['auto', 'Автоматически (SLAAC)'], ['static', 'Статически']], v.autoconfig ? 'auto' : 'static', (m) => {
-        if (m === 'auto') { staticBox.style.display = 'none'; DW.apply(app, () => app.net.getDevice(dev.id).setIpv6Host('auto'), e); } else staticBox.style.display = '';
+      lbl('IPv6-конфигурация'), DW.radio('v6-' + dev.id, [['dhcp', 'Автоматически (DHCPv6)'], ['auto', 'Автонастройка (SLAAC)'], ['static', 'Статически']], mode0, (m) => {
+        if (m !== 'static') { staticBox.style.display = 'none'; DW.apply(app, () => app.net.getDevice(dev.id).setIpv6Host(m), e); } else staticBox.style.display = '';
       }),
       lbl('Link-local'), ll, lbl('Полученный адрес'), auto), staticBox, e);
     return () => {
@@ -61,9 +62,12 @@
       if (!d) return;
       const x = d.iface;
       ll.textContent = d.ll6(x) != null ? ip6.str(d.ll6(x)) : '—';
-      const sl = d.addrs6(x).filter((a) => a.origin === 'slaac');
+      const sl = d.addrs6(x).filter((a) => a.origin === 'slaac' || a.origin === 'dhcp');
       const gw = d.gateway6();
-      auto.textContent = sl.length ? sl.map((a) => ip6.str(a.addr) + '/' + a.plen).join(', ') + (gw ? ', шлюз ' + ip6.str(gw.addr) : '') : (x.v6 && x.v6.autoconfig ? 'ожидание Router Advertisement…' : '—');
+      const dns = d.v6dns && d.v6dns.length ? ', DNS ' + d.v6dns.map((a) => ip6.str(a)).join(', ') : '';
+      const c = d.dhcp6c;
+      const wait = x.v6 && x.v6.dhcp ? (c && c.error ? 'DHCPv6: ' + c.error : gw ? 'запрос адреса у DHCPv6-сервера…' : 'ожидание Router Advertisement…') : x.v6 && x.v6.autoconfig ? 'ожидание Router Advertisement…' : '—';
+      auto.textContent = sl.length ? sl.map((a) => ip6.str(a.addr) + '/' + a.plen + (a.origin === 'dhcp' ? ' (DHCPv6)' : '')).join(', ') + (gw ? ', шлюз ' + ip6.str(gw.addr) : '') + dns : wait;
     };
   };
 
@@ -177,7 +181,7 @@
         tbl(['Интерфейс', 'Ingress', 'Egress'], dev.ifaces.filter((f) => f.flow && (f.flow.in || f.flow.out)).map((f) => h('tr', null, h('td', null, f.name), h('td', null, f.flow.in ? '✓' : ''), h('td', null, f.flow.out ? '✓' : ''))), 'Учёт не включён ни на одном интерфейсе (включите на странице интерфейса)'));
         const cache = h('div', { class: 'muted' });
         box.append(cache, hint('Маршрутизатор записывает потоки (адреса, порты, протокол, число пакетов и байт) и отправляет их по UDP коллектору — программе NetFlow Collector на рабочем столе компьютера или сервера.'));
-        return () => { const d = app.net.getDevice(dev.id); cache.textContent = 'Потоков в кэше: ' + (d.flowCount ? d.flowCount() : 0); };
+        return () => { const d = app.net.getDevice(dev.id); cache.textContent = 'Потоков в кэше: ' + (d.flowCache ? d.flowCache.size : 0); };
       }),
     },
     {
@@ -202,6 +206,18 @@
         box.append(DW.section('Номера (ephone-dn)'), h('div', { class: 'row' }, h('span', null, 'ephone-dn'), tag, num, h('button', { class: 'btn primary small', onClick: () => run(['ephone-dn ' + tag.value, 'number ' + num.value.trim(), 'exit']) }, 'Добавить')));
         const regBox = h('div');
         box.append(regBox, hint('Порядок как в Packet Tracer: 1) DHCP-пул для телефонов с option 150 ip <адрес CME>; 2) telephony-service с max-ephones, max-dn, ip source-address и auto assign; 3) ephone-dn с номерами. Телефоны регистрируются сами (SCCP, TCP 2000); голос идёт напрямую между телефонами по RTP. На коммутаторе — switchport voice vlan.'));
+        const pTag = h('input', { class: 'inp', type: 'number', min: 1, value: Object.keys(c.peers || {}).length + 1, style: { width: '70px' } });
+        const pPat = h('input', { class: 'inp mono', placeholder: 'шаблон, например 2...', style: { width: '140px' } });
+        const pTgt = h('input', { class: 'inp mono', placeholder: 'адрес другого CME', style: { width: '150px' } });
+        const peersBox = h('div');
+        const callsBox = h('div');
+        box.append(DW.section('Вызовы на другой CME (dial-peer voice … voip)'),
+          h('div', { class: 'row' }, h('span', null, 'dial-peer'), pTag, pPat, pTgt, h('button', { class: 'btn primary small', onClick: () => {
+            if (!pPat.value.trim() || !pTgt.value.trim()) { e.textContent = 'Укажите шаблон номеров (destination-pattern) и адрес другого CME (session target)'; return; }
+            run(['dial-peer voice ' + pTag.value + ' voip', 'destination-pattern ' + pPat.value.trim(), 'session target ipv4:' + pTgt.value.trim(), 'exit']);
+          } }, 'Добавить')),
+          peersBox, DW.section('Активные вызовы'), callsBox,
+          hint('Номер, которого нет среди ephone-dn, CME ищет в dial-peer: «.» в шаблоне — любая цифра, «T» — любое число цифр (2... — все четырёхзначные номера на 2). Вызов уходит на session target по H.323 (TCP 1720); на другом CME нужен встречный dial-peer. Голос идёт напрямую между телефонами, поэтому сети телефонов должны быть связаны маршрутами. На телефоне можно поставить вызов на удержание и перевести собеседника на другой номер.'));
         return () => {
           const d = app.net.getDevice(dev.id);
           const cc = d.cme || c;
@@ -214,6 +230,16 @@
             return h('tr', null, h('td', null, n), h('td', { class: 'mono' }, x.number || '—'), h('td', null, eph ? 'ephone-' + eph : '—'),
               h('td', null, reg ? h('span', { class: 'st ok' }, 'зарегистрирован ' + U.ipStr(reg.ip)) : h('span', { class: 'muted' }, 'нет')), h('td', null, delBtn(() => run(['no ephone-dn ' + n]))));
           }), 'Номеров нет'));
+          UI.clear(peersBox);
+          peersBox.append(tbl(['Тег', 'Шаблон', 'session target', 'Состояние', ''], Object.entries(cc.peers || {}).map(([n, p]) => h('tr', null, h('td', null, n), h('td', { class: 'mono' }, p.pattern || '—'),
+            h('td', { class: 'mono' }, p.target != null ? 'ipv4:' + U.ipStr(p.target) : '—'),
+            h('td', null, p.shut ? h('span', { class: 'muted' }, 'shutdown') : p.pattern && p.target != null ? h('span', { class: 'st ok' }, 'up') : h('span', { class: 'muted' }, 'не настроен')),
+            h('td', null, delBtn(() => run(['no dial-peer voice ' + n]))))), 'dial-peer не настроены'));
+          UI.clear(callsBox);
+          const calls = d.cmeRt ? [...d.cmeRt.calls.values()] : [];
+          callsBox.append(tbl(['Кто', 'Кому', 'Состояние', 'Путь'], calls.map((x) => h('tr', null, h('td', { class: 'mono' }, x.from || '?'), h('td', { class: 'mono' }, x.number || '?'),
+            h('td', null, x.state === 'connected' ? (x.held && Object.keys(x.held).length ? 'на удержании' : 'разговор') : 'звонит'),
+            h('td', null, x.trunk ? 'H.323 ' + (x.trunk.dir === 'out' ? '→ ' : '← ') + U.ipStr(x.trunk.ip) : 'внутри CME'))), 'Вызовов нет'));
         };
       }),
     },
@@ -306,12 +332,17 @@
     const u = h('input', { class: 'inp', placeholder: 'имя', spellcheck: 'false' });
     const p = h('input', { class: 'inp', placeholder: 'пароль' });
     const list = h('div');
+    const clockNow = h('span', { class: 'mono' });
+    const clockIn = h('input', { class: 'inp', type: 'time', style: { width: '110px' } });
+    const clockRow = h('div', { class: 'row' }, h('span', null, 'Сейчас:'), clockNow, clockIn,
+      h('button', { class: 'btn outline small', onClick: () => DW.apply(app, () => app.net.getDevice(dev.id).iotd.setClock(clockIn.value), e) }, 'Установить'));
     box.append(DW.section('IoT-сервер (регистрация умных устройств)'),
       DW.form(lbl('Служба'), UI.toggle(s.enabled ? 'Включена' : 'Выключена', s.enabled, (on) => DW.apply(app, () => app.net.getDevice(dev.id).iotd.setEnabled(on), e))),
       DW.section('Учётные записи'),
       h('div', { class: 'row' }, u, p, h('button', { class: 'btn primary small', onClick: () => DW.apply(app, () => app.net.getDevice(dev.id).iotd.addUser(u.value, p.value), e) }, 'Добавить'), e),
       tbl(['Пользователь', 'Пароль', ''], s.users.map((x) => h('tr', null, h('td', null, x.user), h('td', { class: 'mono' }, '•'.repeat(Math.min(8, x.pass.length))), h('td', null, delBtn(() => DW.apply(app, () => app.net.getDevice(dev.id).iotd.removeUser(x.user)))))), 'Нет пользователей — устройства не смогут зарегистрироваться'),
       DW.section('Зарегистрированные устройства'), list,
+      DW.section('Часы сервера (для расписаний в правилах)'), clockRow,
       hint('Умные устройства подключаются к серверу по TCP 1883 (вкладка устройства «Настройка» → «IoT-сервер»). Управлять ими и задавать правила «если… то…» можно программой IoT Monitor на рабочем столе компьютера или смартфона.'));
     return () => {
       const d = app.net.getDevice(dev.id);
@@ -319,6 +350,7 @@
       list.append(tbl(['Устройство', 'Тип', 'Адрес', 'Состояние'], [...d.iotd.things.values()].map((t) => h('tr', null, h('td', null, t.name), h('td', null, NS.iot.KINDS[t.kind] ? NS.iot.KINDS[t.kind].title : t.kind),
         h('td', { class: 'mono' }, U.ipStr(t.ip)), h('td', null, Object.entries(t.state).map(([k, v]) => NS.iot.propText(t.kind, k, v)).join(', ')))), 'Пока никого'),
       h('div', { class: 'muted', style: { marginTop: '6px' } }, 'Правил: ' + d.iotd.rules.length));
+      clockNow.textContent = d.iotd.clock();
     };
   };
 
@@ -340,12 +372,20 @@
     };
   }
 
+  DW.simpleConfig = simpleConfig;
+
   DW.configBuilders.cloud = simpleConfig({
-    items: [{ group: 'ТЕЛЕФОНИЯ' }, { id: 'numbers', label: 'Номера портов' }],
+    items: [{ group: 'ТЕЛЕФОНИЯ' }, { id: 'numbers', label: 'Номера портов' }, { group: 'ПРОВАЙДЕР' }, { id: 'isp', label: 'DSL и кабель' }],
     globalHint: () => 'Облако моделирует телефонную сеть (PSTN): компьютер с модемом PT-HOST-NM-1AM подключается телефонным кабелем к порту Modem и звонит на номер другого порта программой Dial-up.',
     render(sec, app, d, box) {
       const e = err();
-      box.append(DW.section('Номера портов Modem'), h('div', { class: 'form' }, d.ports.map((p) => {
+      if (sec === 'isp') {
+        const peer = (n) => DW.peerText(app.net, d, d.portIndex(n));
+        box.append(DW.section('Сеть провайдера'), DW.form(lbl('Ethernet'), h('div', null, peer('Ethernet')), lbl('DSL'), h('div', null, peer('DSL')), lbl('Coaxial'), h('div', null, peer('Coaxial'))),
+          hint('Порты DSL (телефонный кабель от DSL-модема) и Coaxial (коаксиальный кабель от кабельного модема) соединены с портом Ethernet — к нему подключают маршрутизатор провайдера с DHCP. Абоненту за модемом провайдер выдаёт адрес, как будто они в одной сети.'));
+        return null;
+      }
+      box.append(DW.section('Номера портов Modem'), h('div', { class: 'form' }, d.ports.filter((p) => /^Modem/.test(p.name)).map((p) => {
         const i = h('input', { class: 'inp mono', value: d.numbers[p.name] || '', style: { width: '160px' } });
         DW.commitOnChange(i, () => DW.apply(app, () => app.net.getDevice(d.id).setNumber(p.name, i.value), e));
         return [lbl(p.name + ' — ' + DW.peerText(app.net, d, d.portIndex(p.name))), i];

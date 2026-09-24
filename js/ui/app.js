@@ -138,6 +138,12 @@
         case 'log':
           this.sim.onLog(data);
           break;
+        case 'ios-console':
+          // асинхронные сообщения IOS (%LINK-…, debug) — в открытые консоли этого устройства
+          for (const t of this.terminals.values()) {
+            if ((t.kind === 'cli' && t.devId === data.dev.id) || (t.kind === 'console' && t.targetId === data.dev.id)) t.print(data.line, 'async');
+          }
+          break;
         case 'log-reset':
           this.sim.rebuildRows();
           break;
@@ -648,6 +654,7 @@
         this.undoBtn, this.redoBtn,
         h('span', { class: 'sep' }),
         btn('book', 'Примеры', 'Готовые схемы для изучения', () => this.showExamples()),
+        btn('task', 'Задание', 'Задания с проверкой: мастер заданий, инструкции, проверка результата', (e) => UI.taskMenu(this, e)),
         btn('tag', 'Вид', 'Настройки отображения', (e) => this.viewMenu(e)),
         btn('help', 'Справка', 'Как пользоваться NetLab (F1)', () => this.showHelp()));
     },
@@ -668,6 +675,8 @@
         { label: (s.autoPorts ? '☑ ' : '☐ ') + 'Кабель: выбирать порт автоматически', onClick: () => flip('autoPorts') },
         { label: (s.showNvram ? '☑ ' : '☐ ') + 'Отмечать несохранённую конфигурацию (NVRAM)', onClick: () => flip('showNvram') },
         { label: (s.confirmPowerOff ? '☑ ' : '☐ ') + 'Спрашивать перед выключением без сохранения', onClick: () => flip('confirmPowerOff') },
+        { label: ((this.net.physical && this.net.physical.enabled) ? '☑ ' : '☐ ') + 'Физические расстояния (длина кабелей, дальность Wi-Fi)…', onClick: () => this.physicalDialog() },
+        { label: 'Многопользовательский режим…', onClick: () => UI.multiuserDialog(this) },
         DESKTOP ? { label: (s.autoUpdate ? '☑ ' : '☐ ') + 'Проверять обновления при запуске', onClick: () => flip('autoUpdate') } : null,
         '-',
         { title: 'Тема' },
@@ -675,6 +684,33 @@
         { label: (s.theme === 'dark' ? '● ' : '○ ') + 'Тёмная', onClick: () => this.setTheme('dark') },
         { label: (s.theme === 'light' ? '● ' : '○ ') + 'Светлая', onClick: () => this.setTheme('light') },
       ]);
+    },
+
+    /** Масштаб схемы и проверка длины кабелей (сохраняется в файле схемы). */
+    physicalDialog() {
+      const c = Object.assign({}, NS.physical.cfg(this.net));
+      const on = h('input', { type: 'checkbox', checked: c.enabled });
+      const num = (v, step) => h('input', { class: 'inp', type: 'number', step, value: v, style: { width: '110px' } });
+      const scale = num(c.scale, '0.05');
+      const wifi = num(c.wifi, '5');
+      const cell = num(c.cell, '100');
+      const err = h('div', { class: 'err-text' });
+      const L = NS.physical.MAX_LEN;
+      const body = h('div', null,
+        h('label', { class: 'row' }, on, ' Учитывать физические расстояния'),
+        h('div', { class: 'form', style: { marginTop: '10px' } },
+          h('label', null, 'Масштаб, м в единице схемы'), scale, h('label', null, 'Дальность Wi-Fi, м'), wifi, h('label', null, 'Дальность вышки 3G/4G, м'), cell),
+        err,
+        h('div', { class: 'hint-box', style: { marginTop: '10px' } }, 'Длина кабеля считается по расстоянию между устройствами на схеме. Предельная длина: медь — ' + L.straight + ' м, оптика — ' + L.fiber + ' м, коаксиал — ' + L.coaxial + ' м, телефонная линия (DSL) — ' + L.phone + ' м, Serial — ' + L.serial + ' м. Слишком длинный кабель не передаёт данные (индикаторы красные, подпись длины выделена). Сетка схемы — 20 единиц.'));
+      const apply = () => {
+        try {
+          this.mutate(() => NS.physical.setPhysical(this.net, { enabled: on.checked, scale: Number(scale.value), wifi: Number(wifi.value), cell: Number(cell.value) }));
+          this.markDirty();
+          this.needRender = true;
+          return true;
+        } catch (e2) { err.textContent = e2.message; return false; }
+      };
+      UI.modal({ title: 'Физические расстояния', body, actions: [{ label: 'Отмена' }, { label: 'Применить', primary: true, onClick: apply }], enterAction: apply });
     },
 
     setTheme(t) {
@@ -703,6 +739,7 @@
       add('select', UI.icon('select'), 'Выбор', 'Выбор и перемещение (V). Двойной щелчок — настройки устройства');
       add('inspect', UI.icon('inspect'), 'Инспектор', 'Посмотреть таблицы устройства: ARP, MAC, маршрутизация, NAT (I)');
       add('pdu', UI.icon('pdu'), 'Проверка связи', 'Отправить один ping от устройства к устройству (P)');
+      add('cpdu', UI.icon('list'), 'Сложный PDU', 'Пакет с выбранным протоколом (ICMP, TCP, UDP), портом, TTL и повторами; можно сохранить в сценарий');
       add('mail', UI.icon('mail'), 'Сообщение', 'Отправить сообщение с компьютера сразу нескольким ПК (M)');
       add('note', UI.icon('note'), 'Заметка', 'Добавить текстовую заметку (N)');
       const shapeBtn = add('shape', UI.icon('shape'), 'Фигура', 'Нарисовать прямоугольник или эллипс для выделения зоны (G). Правый щелчок — выбор фигуры');
@@ -844,19 +881,59 @@
     },
 
     markDirty() {
-      if (this.dirty) return;
+      if (this.dirty) {
+        // схема «Без имени» могла только что стать непустой — оболочке нужно знать, спрашивать ли при закрытии
+        if (DESKTOP && !this.filePath) DESKTOP.setState({ dirty: true, filePath: null, hasContent: this.hasContent() });
+        return;
+      }
       this.dirty = true;
       this.fileStateChanged();
     },
 
     fileStateChanged() {
-      document.title = (this.fileName || 'Без имени') + (this.dirty && this.fileName ? ' •' : '') + ' — NetLab';
+      document.title = (this.fileName || 'Без имени') + (this.dirty ? ' •' : '') + ' — NetLab';
       UI.store.set(FILE_KEY, JSON.stringify({ path: this.filePath, name: this.fileName, dirty: this.dirty }));
-      if (DESKTOP) DESKTOP.setState({ dirty: this.dirty, filePath: this.filePath });
+      if (DESKTOP) DESKTOP.setState({ dirty: this.dirty, filePath: this.filePath, hasContent: this.hasContent() });
+    },
+
+    /** В схеме есть что сохранять (устройства, заметки или фигуры). */
+    hasContent() { return !!this.net && (this.net.devices.size > 0 || this.net.notes.length > 0 || this.net.shapes.length > 0); },
+
+    /** Есть несохранённые изменения, которые пропадут при замене схемы. */
+    hasUnsaved() { return this.dirty && (!!this.filePath || this.hasContent()); },
+
+    /**
+     * Перед заменой схемы (новая, открыть, пример) — предложить сохранить несохранённые изменения.
+     * Возвращает true, если можно продолжать.
+     */
+    async confirmUnsaved(title) {
+      if (!this.hasUnsaved()) return true;
+      const named = this.fileName ? '«' + this.fileName + '»' : null;
+      const choice = await new Promise((resolve) => {
+        let answered = false;
+        const pick = (v) => { if (!answered) { answered = true; resolve(v); } };
+        UI.modal({
+          title: title || 'Несохранённые изменения',
+          body: h('div', null,
+            h('p', null, named ? 'Сохранить изменения в ' + named + '?' : 'Эта схема ещё не сохранена в файл. Сохранить её?'),
+            h('p', { class: 'muted' }, named ? 'Если не сохранить, последние изменения пропадут (их можно будет вернуть только кнопкой «Отменить» до закрытия программы).'
+              : 'Если не сохранить, схема пропадёт при открытии другой (вернуть её можно будет только кнопкой «Отменить» до закрытия программы).')),
+          onCancel: () => pick('cancel'),
+          enterAction: () => pick('save'),
+          actions: [
+            { label: 'Отмена', onClick: () => pick('cancel') },
+            { label: 'Не сохранять', onClick: () => pick('discard') },
+            { label: 'Сохранить', primary: true, onClick: () => pick('save') },
+          ],
+        });
+      });
+      if (choice === 'cancel') return false;
+      if (choice === 'save') return this.saveFile(false);
+      return true;
     },
 
     async newProject() {
-      if (this.net.devices.size && !(await UI.confirm('Новая схема', 'Текущая схема будет закрыта. Её можно вернуть кнопкой «Отменить».', 'Создать'))) return;
+      if (this.hasUnsaved()) { if (!(await this.confirmUnsaved('Новая схема'))) return; } else if (this.net.devices.size && !(await UI.confirm('Новая схема', 'Текущая схема будет закрыта. Её можно вернуть кнопкой «Отменить».', 'Создать'))) return;
       this.setNetwork(new NS.Network(), { undoable: true });
       this.setFile(null, null, false);
     },
@@ -884,6 +961,7 @@
     },
 
     async openFile() {
+      if (!(await this.confirmUnsaved('Открыть файл'))) return;
       if (DESKTOP) {
         try {
           const f = await DESKTOP.openFile();
@@ -945,15 +1023,17 @@
         if (!/\.(netlab|json)$/i.test(f.name)) { UI.toast('Можно открыть только файл схемы (.netlab)', 'err'); return; }
         const path = DESKTOP ? DESKTOP.pathForFile(f) : null;
         const r = new FileReader();
-        r.onload = () => this.openText(String(r.result), f.name, path);
+        r.onload = async () => { if (await this.confirmUnsaved('Открыть файл')) this.openText(String(r.result), f.name, path); };
         r.readAsText(f);
       });
-      window.addEventListener('beforeunload', () => {
+      window.addEventListener('beforeunload', (e) => {
         clearTimeout(this.saveTimer);
         UI.store.set(AUTOSAVE_KEY, this.snapshot());
+        // в браузере — стандартный вопрос «Покинуть сайт?»; в настольной версии спрашивает сама оболочка
+        if (!DESKTOP && this.hasUnsaved()) { e.preventDefault(); e.returnValue = ''; }
       });
       if (!DESKTOP) return;
-      DESKTOP.onOpenFile((f) => this.openText(f.text, f.name, f.path));
+      DESKTOP.onOpenFile(async (f) => { if (await this.confirmUnsaved('Открыть файл')) this.openText(f.text, f.name, f.path); });
       DESKTOP.onMenu(async (cmd) => {
         if (document.querySelector('.modal-back') && cmd !== 'save-and-close') return;
         switch (cmd) {
@@ -992,7 +1072,7 @@
       for (const ex of UI.EXAMPLES) {
         list.appendChild(h('button', {
           class: 'msg-card', style: { textAlign: 'left', cursor: 'pointer', display: 'block', width: '100%', color: 'inherit', font: 'inherit' },
-          onClick: () => { close(); this.loadExample(ex); },
+          onClick: async () => { close(); if (await this.confirmUnsaved('Открыть пример')) this.loadExample(ex); },
         }, h('div', { class: 'head' }, h('span', null, ex.title), h('span', { class: 'meta' }, ex.level)), h('div', { class: 'body muted' }, ex.desc)));
       }
       close = UI.modal({ title: 'Примеры', body: list, actions: [{ label: 'Закрыть' }] });
@@ -1032,6 +1112,12 @@
           h('li', null, 'Bluetooth: программа на смартфоне, ноутбуке или планшете; устройства должны быть рядом на схеме.'),
           h('li', null, 'IoT: умные устройства и платы — категория IoT слева. IoT Monitor управляет устройствами, вкладка «Программирование» платы запускает код, IoX IDE загружает приложения на маршрутизатор.'),
           h('li', null, 'Готовые примеры по каждой теме — кнопка «Примеры».')),
+        h('b', null, 'Новое в 1.3'),
+        h('ul', null,
+          h('li', null, 'Задания с проверкой: кнопка «Задание» → «Мастер заданий» (ответ, инструкции, пункты оценки, таймер). У ученика — панель задания с кнопкой «Проверить».'),
+          h('li', null, 'ASA 5506-X, WLC 2504 и точки LAP, модемы, вышка 3G/4G, сетевой контроллер — в категориях слева; у ASA свой CLI, WLC настраивается во вкладке «Настройка».'),
+          h('li', null, 'Инструмент «Сложный PDU» — на панели слева, сценарии PDU — внизу. «Вид» → «Физические расстояния» и «Многопользовательский режим».'),
+          h('li', null, 'Программы плат — на JavaScript, Python или блоками (вкладка «Программирование»). На IP-телефоне — «Удержать», «Вернуть», «Перевести».')),
         h('b', null, 'Клавиши'),
         h('ul', null,
           h('li', null, k('V'), ' выбор, ', k('C'), ' кабель, ', k('P'), ' ping, ', k('M'), ' сообщение, ', k('I'), ' инспектор, ', k('N'), ' заметка, ', k('G'), ' фигура, ', k('X'), ' удаление'),
@@ -1100,5 +1186,5 @@
   };
 
   NS.app = App;
-  window.addEventListener('DOMContentLoaded', () => App.init());
+  window.addEventListener('DOMContentLoaded', () => { App.init(); if (NS.muSetup) NS.muSetup(App); if (NS.taskSetup) NS.taskSetup(App); });
 })(globalThis.NetLab = globalThis.NetLab || {});

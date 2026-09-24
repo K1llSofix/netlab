@@ -689,7 +689,7 @@
       }
       const why = (r.type === 'C'
         ? 'Сеть ' + U.cidr(r.net, r.mask) + ' подключена напрямую → ' + r.ifc.name
-        : 'Маршрут ' + ({ S: 'статический', O: 'OSPF', R: 'RIP' }[r.type] || r.type) + ' ' + U.cidr(r.net, r.mask) +
+        : 'Маршрут ' + ({ S: 'статический', O: 'OSPF', R: 'RIP', D: 'EIGRP', B: 'BGP' }[r.type] || r.type) + (r.sub && r.sub !== '*' ? ' ' + r.sub.replace('*', '') : '') + ' ' + U.cidr(r.net, r.mask) +
           (r.nextHop != null ? ' через ' + U.ipStr(r.nextHop) : '') + ' → ' + r.ifc.name) + natNote;
       for (const hk of IpNode.hooks.fwdOut) hk.call(this, f, r.ifc, out);
       this.resolveAndSend(r.ifc, r.nextHop != null ? r.nextHop : out.dst, out, {
@@ -800,6 +800,7 @@
       c.router = d.router || null;
       c.dns = d.dns || null;
       c.tftp = d.tftp || null;
+      c.wlc = d.wlc || null;
       c.timer = null;
       this.dhcpStatus = 'Адрес получен от DHCP-сервера ' + U.ipStr(d.serverId);
       this.onDhcpBound(f, d);

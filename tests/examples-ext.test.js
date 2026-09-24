@@ -8,7 +8,7 @@ require(path.join(__dirname, '..', 'js', 'ui', 'examples.js'));
 require(path.join(__dirname, '..', 'js', 'ui', 'examples-ext.js'));
 
 const U = NL.util;
-const IDS = ['ipv6', 'snmp-netflow', 'gre', 'ipsec', 'pppoe', 'dialup', 'voip', 'bluetooth', 'smarthome', 'mcu', 'iox'];
+const IDS = ['ipv6', 'snmp-netflow', 'gre', 'ipsec', 'pppoe', 'dialup', 'voip', 'bluetooth', 'smarthome', 'mcu', 'iox', 'task-router'];
 
 function build(id) {
   const ex = NL.ui.EXAMPLES.find((e) => e.id === id);
@@ -77,9 +77,22 @@ test('IP-телефония, Bluetooth, умный дом, MCU, IOx', () => {
   by(net, 'Motion').thingSet('detected', true);
   by(net, 'Smoke').thingSet('level', 60);
   net.runUntilIdle(200000);
+  // часы шлюза — 00:00: правило «Ночник» (движение И 22:00–07:00) стоит ниже и побеждает
+  assert.equal(by(net, 'Lamp').thing.state.level, 1);
+  by(net, 'Home Gateway').iotd.setClock('12:00');
+  net.runUntilIdle(200000);
   assert.equal(by(net, 'Lamp').thing.state.level, 2);
   assert.equal(by(net, 'Siren').thing.state.on, true);
   assert.equal(by(net, 'Door').thing.state.open, true);
+
+  // пример задания: в начале — не всё сделано, после настройки R1 — 100 %
+  net = build('task-router');
+  let res = NL.activity.check(net, net.task);
+  assert.ok(res.percent < 50, 'начальная схема: ' + res.percent + '%');
+  NL.cliIos.replayConfig(by(net, 'R1'), ['hostname R1', 'interface GigabitEthernet0/0', ' description LAN-A', ' ip address 192.168.10.1 255.255.255.0',
+    'interface GigabitEthernet0/1', ' description LAN-B', ' ip address 192.168.20.1 255.255.255.0'], { out: () => {}, mutate: (fn) => fn() }, false);
+  res = NL.activity.check(net, net.task);
+  assert.equal(res.percent, 100, JSON.stringify(res.items.filter((x) => !x.ok)));
 
   net = build('mcu');
   const mcu = by(net, 'MCU');

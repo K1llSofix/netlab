@@ -1,31 +1,37 @@
-### IPv6
-- Адреса IPv6 на интерфейсах, ipv6 unicast-routing, статические маршруты, Neighbor Discovery.
-- Компьютеры получают адрес сами (SLAAC) или вручную — поля IPv6 в IP Configuration. ping и tracert по IPv6.
+### Задания с проверкой (как Activity Wizard)
+- Меню «Задание» → «Мастер заданий»: схема-ответ, начальная схема, инструкции, пункты оценки (строки конфигурации, адреса, соединения, состояние портов), проверки связи ping, таймер и пароль мастера.
+- У ученика — панель задания: инструкции, таймер, «Проверить» (процент выполнения и что верно, что нет) и «Заново». Ответ хранится в файле в закодированном виде.
 
-### Мониторинг: SNMP и NetFlow
-- SNMP-агент на маршрутизаторах и коммутаторах (snmp-server community RO/RW) и программа MIB Browser: Get, Walk, Set.
-- NetFlow: ip flow ingress/egress, экспорт потоков и программа NetFlow Collector.
+### Коммутация
+- PVST+ и Rapid PVST+ (свой корень для каждого VLAN), PortFast и BPDU Guard.
+- DTP (dynamic auto / desirable, nonegotiate), VTP (server, client, transparent; домен и пароль).
+- EtherChannel: LACP и PAgP, interface Port-channel, show etherchannel summary.
 
-### VPN, PPPoE, Dial-up
-- GRE-туннели, IPsec между офисами (crypto map) и удалённый доступ Easy VPN с программой VPN.
-- PPPoE-сервер на маршрутизаторе (bba-group, Virtual-Template, CHAP/PAP) и программа PPPoE Dialer.
-- Модем в компьютере, телефонная сеть Cloud-PT с номерами и программа Dial-up.
+### Маршрутизация
+- EIGRP: соседи, DUAL, variance, суммаризация. BGP: eBGP и iBGP, network … mask, show ip bgp.
+- Редистрибуция между RIP, OSPF, EIGRP, BGP, static и connected; OSPF: межзональные и внешние маршруты, area … range.
+- IPv6: OSPFv3, RIPng, DHCPv6-сервер на маршрутизаторе и DHCPv6 на компьютере.
+- Резервирование шлюза: HSRP, VRRP и GLBP (preempt, track, балансировка GLBP).
 
-### IP-телефония
-- АТС Cisco CME на маршрутизаторе: telephony-service, ephone-dn, auto assign, show ephone.
-- IP-телефон Cisco 7960: питание от адаптера или PoE коммутатора 3560-24PS, голосовой VLAN, порт для компьютера. Звонки и «разговор» по RTP.
-- Программный телефон IP Communicator на компьютере.
+### Безопасность
+- AAA: RADIUS и TACACS+ на Server-PT, aaa new-model, login authentication, test aaa group.
+- DHCP snooping, Dynamic ARP Inspection, 802.1X на портах коммутатора (супликант на ПК).
+- Межсетевой экран на основе зон (ZBF) на маршрутизаторе и межсетевой экран ASA 5506-X: nameif, security-level, PAT, access-group, inspect icmp, dhcpd.
+- IPsec: видны обе фазы IKE — Main Mode (6 сообщений) и Quick Mode (3); ошибки фазы 1 и 2 отдельно; show crypto session, debug crypto isakmp.
 
-### Bluetooth
-- Смартфон, Bluetooth-колонка и гарнитура. Поиск в радиусе, сопряжение по PIN, музыка на колонке, передача файлов.
+### Беспроводные сети и WAN
+- Контроллер WLC 2504 и точки LAP 3702i: CAPWAP, option 43, WLAN в VLAN; WPA2-Enterprise с проверкой на RADIUS.
+- Облако провайдера с DSL и коаксиалом, DSL- и кабельный модемы, вышка 3G/4G для смартфонов.
+- Новые модели: маршрутизаторы 1841 и ISR 4331 (NIM-2T, NIM-ES2-4), коммутатор 3650-24PS, модуль HWIC-4ESW.
 
-### Интернет вещей и программирование
-- Умные устройства (лампа, вентилятор, дверь, окно, сирена, датчики движения, температуры и дыма) и домашний шлюз Home Gateway.
-- IoT Monitor: управление устройствами и правила «если… то…». Служба IoT на сервере.
-- Платы MCU-PT и SBC-PT, IoT-компоненты и вкладка «Программирование»: JavaScript с setup() и loop(), шаблоны и консоль.
-- IOx на маршрутизаторе и программа IoX IDE: веб-приложение прямо на маршрутизаторе.
+### IP-телефония и IoT
+- Удержание и перевод вызова на телефоне; вызовы между двумя CME по dial-peer voice (H.323), show dial-peer voice summary.
+- Правила IoT: несколько условий «И» / «ИЛИ» и расписание по часам сервера.
+- Программирование плат на Python и блоками, а не только на JavaScript.
 
-### Удобство
-- 11 новых примеров: по одному на каждую возможность.
-- Значки устройств показывают состояние: лампа горит, колонка играет, под телефоном виден его номер.
-- Фильтры режима «Симуляция» включают новые протоколы: SCCP, RTP, IoT, GRE, ESP, PPPoE, SNMP, NetFlow и другие.
+### Управление и инструменты
+- Syslog, NTP, FTP-сервер и copy running-config ftp:, команды debug.
+- Сложный PDU и сценарии в режиме симуляции, физические расстояния (длина кабелей, дальность Wi-Fi).
+- Сетевой контроллер с REST API и программа «REST-клиент», многопользовательский режим между копиями NetLab.
+- Перед открытием другой схемы NetLab предлагает сохранить несохранённую.
+- 11 новых примеров, в том числе готовое задание с проверкой.

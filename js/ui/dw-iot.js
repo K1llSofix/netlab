@@ -131,6 +131,20 @@
     r.onChange();
   }
 
+  const PY_BLINK = '# Мигание светодиодом на пине D0 (Python)\nfrom gpio import *\nfrom time import *\n\ndef main():\n    pinMode(0, OUT)\n    print("Старт")\n    while True:\n        digitalWrite(0, HIGH)\n        sleep(0.5)\n        digitalWrite(0, LOW)\n        sleep(0.5)\n\nif __name__ == "__main__":\n    main()\n';
+  const PY_TEMPLATES = [
+    ['blink', 'Мигание светодиодом (D0)', PY_BLINK],
+    ['button', 'Кнопка (D1) включает светодиод (D0)', '# Кнопка на D1, светодиод на D0\nfrom gpio import *\nfrom time import *\n\ndef main():\n    pinMode(0, OUT)\n    pinMode(1, IN)\n    while True:\n        if digitalRead(1) == HIGH:\n            digitalWrite(0, HIGH)\n        else:\n            digitalWrite(0, LOW)\n        delay(50)\n\nif __name__ == "__main__":\n    main()\n'],
+    ['pot', 'Потенциометр (A0) → мотор (D2)', '# Потенциометр на A0 управляет мотором на D2\nfrom gpio import *\nfrom time import *\n\ndef main():\n    pinMode(2, OUT)\n    while True:\n        v = analogRead(A0)\n        analogWrite(2, v)\n        print("A0 =", v)\n        sleep(0.5)\n\nif __name__ == "__main__":\n    main()\n'],
+  ];
+  const LANGS = [['js', 'JavaScript'], ['python', 'Python'], ['blocks', 'Блоки']];
+  const RT = NS.scriptRt;
+  /** Код и язык для запуска: блоки собираются в JavaScript. */
+  function runnable(p) {
+    if (p.lang === 'blocks') return { code: RT.blocksToJs(p.blocks || DW.defaultBlocks()), lang: 'js' };
+    return { code: p.code, lang: p.lang === 'python' ? 'python' : 'js' };
+  }
+
   function startProgram(app, id, logs, onChange) {
     stopProgram(id);
     const dev = app.net.getDevice(id);
@@ -165,7 +179,8 @@
       } else if (m.type === 'done') stopProgram(id, 'программа завершилась');
     };
     worker.onerror = (e) => { logs.push({ kind: 'err', text: 'Ошибка потока: ' + (e.message || e) }); stopProgram(id); };
-    worker.postMessage({ type: 'run', code: I.program(dev).code, inputs: I.inputs(dev) });
+    const rp = runnable(I.program(dev));
+    worker.postMessage({ type: 'run', code: rp.code, lang: rp.lang, inputs: I.inputs(dev) });
     onChange();
   }
 
@@ -181,6 +196,8 @@
         st.progLog = st.progLog || [];
         const ta = h('textarea', { class: 'code-editor mono', spellcheck: 'false', wrap: 'off' });
         ta.value = I.program(dev).code;
+        const prog0 = I.program(dev);
+        const lang = () => I.program(app.net.getDevice(id)).lang || 'js';
         let saveT = null;
         const save = () => {
           clearTimeout(saveT);
@@ -194,7 +211,7 @@
           if (ev.key === 'Tab') {
             ev.preventDefault();
             const a = ta.selectionStart;
-            ta.setRangeText('  ', a, ta.selectionEnd, 'end');
+            ta.setRangeText(lang() === 'python' ? '    ' : '  ', a, ta.selectionEnd, 'end');
           } else if (ev.key === 'Enter' && ev.ctrlKey) { ev.preventDefault(); run(); }
         });
         const con = h('div', { class: 'gen-log prog-console' });
@@ -215,20 +232,74 @@
         runBtn.addEventListener('click', run);
         const r = running.get(id);
         if (r) r.onChange = onChange;
+        const tplList = () => (lang() === 'python' ? PY_TEMPLATES : TEMPLATES);
         const tpl = DW.select([['', 'Шаблоны…']].concat(TEMPLATES.map((t) => [t[0], t[1]])), '', async (v) => {
-          const t = TEMPLATES.find((x) => x[0] === v);
+          if (lang() === 'blocks') { tpl.value = ''; return; }
+          const t = tplList().find((x) => x[0] === v);
           tpl.value = '';
           if (!t) return;
           if (ta.value.trim() && ta.value !== t[2] && !(await UI.confirm('Шаблон', 'Заменить текущую программу шаблоном «' + t[1] + '»?', 'Заменить'))) return;
           ta.value = t[2];
           save();
         });
+        // редактор блоков и предпросмотр кода
+        const blocksBox = h('div', { class: 'blocks-wrap' });
+        const genPre = h('pre', { class: 'code-editor mono blocks-code' });
+        const editor = h('div', { class: 'prog-editor' }, ta, blocksBox);
+        const langNote = h('span', { class: 'muted small' });
+        const sideHint = h('div', { class: 'hint-box small' });
+        const setProg = (fn) => { const d = app.net.getDevice(id); if (d) app.mutate(() => fn(I.program(d))); };
+        const showLang = () => {
+          const l = lang();
+          ta.style.display = l === 'blocks' ? 'none' : '';
+          blocksBox.style.display = l === 'blocks' ? '' : 'none';
+          UI.clear(tpl);
+          tpl.append(h('option', { value: '' }, l === 'blocks' ? 'Шаблоны — для кода' : 'Шаблоны…'), ...tplList().map((t) => h('option', { value: t[0] }, t[1])));
+          langNote.textContent = l === 'python' ? 'Python · main() или setup()/loop() · Ctrl+Enter — запуск' : l === 'blocks' ? 'Блоки · собираются в JavaScript' : 'JavaScript · setup() и loop() · Ctrl+Enter — запуск';
+          sideHint.textContent = l === 'python'
+            ? 'from gpio import * · pinMode(0, OUT) · digitalWrite(0, HIGH) · digitalRead(1) · analogRead(A0) · analogWrite(2, 512) · sleep(0.5) / delay(500) · print(…). Поддерживается основное подмножество Python: def, if/elif/else, while, for … in range(), списки, f-строки.'
+            : l === 'blocks' ? 'Соберите программу из блоков: «При запуске» выполняется один раз, «Повторять» — по кругу. Ниже — код, который получится; его можно перенести в редактор JavaScript.'
+              : 'pinMode(0, OUTPUT); digitalWrite(0, HIGH); digitalRead(1); analogRead(A0); analogWrite(2, 512); delay(500); Serial.println("…"). Программа работает в отдельном потоке без доступа к сети и файлам.';
+          if (l === 'blocks') {
+            const work = JSON.parse(JSON.stringify(I.program(app.net.getDevice(id)).blocks || DW.defaultBlocks()));
+            UI.clear(blocksBox);
+            const upd = () => { genPre.textContent = RT.blocksToJs(work); };
+            blocksBox.append(DW.blocksEditor(work, () => { setProg((x) => { x.blocks = JSON.parse(JSON.stringify(work)); }); upd(); }), h('div', { class: 'section-title' }, 'Код из блоков'), genPre,
+              h('button', { class: 'btn outline small', onClick: async () => {
+                if (!(await UI.confirm('Блоки → JavaScript', 'Перенести код в редактор JavaScript? Блоки сохранятся, к ним можно вернуться.', 'Перенести'))) return;
+                setProg((x) => { x.code = RT.blocksToJs(x.blocks); x.lang = 'js'; });
+                ta.value = I.program(app.net.getDevice(id)).code;
+                langSel.value = 'js';
+                showLang();
+              } }, 'Перенести в JavaScript'));
+            upd();
+          }
+        };
+        const langSel = DW.select(LANGS, prog0.lang || 'js', async (v) => {
+          if (running.has(id)) stopProgram(id);
+          save();
+          const p = I.program(app.net.getDevice(id));
+          if (v === 'python' && p.lang !== 'python') {
+            const jsLike = /\bfunction\b/.test(p.code);
+            if (jsLike && (p.code === I.DEFAULT_CODE || await UI.confirm('Python', 'Заменить программу примером на Python? (текущий код JavaScript будет потерян)', 'Заменить'))) {
+              setProg((x) => { x.code = PY_BLINK; });
+              ta.value = PY_BLINK;
+            }
+          }
+          if (v === 'js' && p.lang === 'python' && !/\bfunction\b/.test(p.code)) {
+            setProg((x) => { x.code = I.DEFAULT_CODE; });
+            ta.value = I.DEFAULT_CODE;
+          }
+          setProg((x) => { x.lang = v === 'js' ? undefined : v; if (v === 'blocks' && !x.blocks) x.blocks = DW.defaultBlocks(); });
+          if (!prog0.lang && v === 'js') delete I.program(app.net.getDevice(id)).lang;
+          showLang();
+        }, { style: { width: '130px' } });
         body.append(h('div', { class: 'prog' },
-          h('div', { class: 'prog-bar' }, runBtn, h('button', { class: 'btn outline small', onClick: () => { st.progLog.length = 0; drawLog(); } }, 'Очистить консоль'), tpl,
-            h('span', { class: 'grow' }), h('span', { class: 'muted small' }, 'JavaScript · setup() и loop() · Ctrl+Enter — запуск')),
-          h('div', { class: 'prog-main' }, ta, h('div', { class: 'prog-side' }, h('div', { class: 'section-title' }, 'Пины'), pins,
-            h('div', { class: 'hint-box small' }, 'pinMode(0, OUTPUT); digitalWrite(0, HIGH); digitalRead(1); analogRead(A0); analogWrite(2, 512); delay(500); Serial.println("…"). Программа работает в отдельном потоке без доступа к сети и файлам.'))),
+          h('div', { class: 'prog-bar' }, runBtn, h('button', { class: 'btn outline small', onClick: () => { st.progLog.length = 0; drawLog(); } }, 'Очистить консоль'), langSel, tpl,
+            h('span', { class: 'grow' }), langNote),
+          h('div', { class: 'prog-main' }, editor, h('div', { class: 'prog-side' }, h('div', { class: 'section-title' }, 'Пины'), pins, sideHint)),
           h('div', { class: 'section-title' }, 'Консоль'), con));
+        showLang();
         drawLog();
         tab.live = () => {
           const d = app.net.getDevice(id);
@@ -278,7 +349,11 @@
           h('button', { class: 'btn primary small', onClick: () => { const n = ps.digits; act((c) => c.dial(n)); ps.digits = ''; digits.textContent = ' '; } }, '📞 Вызов'),
           h('button', { class: 'btn outline small', onClick: () => act((c) => c.answer()) }, 'Ответить'),
           h('button', { class: 'btn outline small danger', onClick: () => act((c) => { c.hangup(); return null; }) }, 'Положить'),
-          h('button', { class: 'btn icon small', title: 'Стереть', onClick: () => { ps.digits = ps.digits.slice(0, -1); digits.textContent = ps.digits || ' '; } }, '⌫')), e),
+          h('button', { class: 'btn icon small', title: 'Стереть', onClick: () => { ps.digits = ps.digits.slice(0, -1); digits.textContent = ps.digits || ' '; } }, '⌫')),
+        h('div', { class: 'row', style: { marginTop: '6px' } },
+          h('button', { class: 'btn outline small', title: 'Поставить разговор на удержание (Hold)', onClick: () => act((c) => c.hold()) }, '⏸ Удержать'),
+          h('button', { class: 'btn outline small', title: 'Вернуться к разговору (Resume)', onClick: () => act((c) => c.resume()) }, '▶ Вернуть'),
+          h('button', { class: 'btn outline small', title: 'Слепой перевод: соединить собеседника с набранным номером', onClick: () => { const n = ps.digits; act((c) => c.transfer(n)); ps.digits = ''; digits.textContent = ' '; } }, '↪ Перевести')), e),
       h('div', { class: 'phone-right' }, h('div', { class: 'section-title' }, 'Разговор (RTP)'), h('div', { class: 'row' }, sayI, h('button', { class: 'btn small', onClick: say }, 'Сказать')), heard)));
     digits.textContent = ps.digits || ' ';
     return () => {
@@ -289,7 +364,7 @@
       screen.append(
         h('div', { class: 'ps-top' }, h('span', null, c.number ? 'Линия ' + c.number : 'Нет номера'), h('span', null, c.state === 'registered' ? '● CME' : '○')),
         h('div', { class: 'ps-main' }, call ? call.text : c.state === 'registered' ? (c.message || 'Готов') : c.text || '—'),
-        h('div', { class: 'ps-sub' }, call && call.state === 'ringing' ? '🔔 Звонок! Нажмите «Ответить»' : call && call.state === 'connected' ? 'Голос идёт напрямую на ' + U.ipStr(call.peerIp) : call ? 'Ждём ответа… («Положить» — отменить)' : c.state === 'registered' ? 'Наберите номер и нажмите «Вызов»' : ''));
+        h('div', { class: 'ps-sub' }, call && call.state === 'ringing' ? '🔔 Звонок! Нажмите «Ответить»' : call && call.state === 'connected' && call.hold ? '⏸ На удержании — «Вернуть»; или наберите номер и «Перевести»' : call && call.state === 'connected' && call.remoteHold ? '♫ Музыка ожидания' : call && call.state === 'connected' ? 'Голос идёт напрямую на ' + U.ipStr(call.peerIp) + ' · для перевода наберите номер и «Перевести»' : call ? 'Ждём ответа… («Положить» — отменить)' : c.state === 'registered' ? 'Наберите номер и нажмите «Вызов»' : ''));
       screen.className = 'phone-screen' + (call && call.state === 'ringing' ? ' ringing' : '');
       UI.clear(heard);
       for (const x of c.heard.slice(-30)) heard.appendChild(h('div', null, '🔊 ' + x.from + ': ' + x.text));

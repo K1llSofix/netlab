@@ -40,10 +40,12 @@
     show: [],     // (dev, s, a, io, CTX) — show …
     exec: [],     // (dev, s, t, io, line, CTX) → {handled, job} | null — user/privileged
     global: [],   // (t, s) → true, если команда глобальная (из подрежима выйти в config)
-    modes: {},    // имя → { prompt(dev, s) → '(config-xxx)#', run(dev, s, t, io, CTX), tree: [...] }
+    modes: {},    // имя → { prompt(dev, s) → '(config-xxx)#', run(dev, s, t, io, CTX), tree: [...], parent?: режим для exit }
     ifNames: [],  // (dev, str) → { kind: 'named', name, create(dev), remove(dev) } | null
-    running: { global: [], iface: [], tail: [] }, // (dev[, f, port]) → строки
+    running: { global: [], iface: [], tail: [], line: [] }, // (dev[, f, port]) → строки; line: (dev, 'con'|'vty', cfg)
     tree: {},     // режим → дополнительные строки для «?»
+    login: [],    // (dev, s, io, lineCfg, user, onOk, onDeny) → true, если вход обработан (AAA)
+    line: [],     // (dev, s, a, neg, io, lineCfg, CTX) → true — команды режима line
   };
 
   /** Имя интерфейса: g0/0, gi0/0.10, fa0/1, s0/0/0, vlan 10, lo0, "gig 0/1". */
@@ -102,13 +104,17 @@
   function switchPortLines(dev, p) {
     const L = [];
     if (p.routed) { L.push(' no switchport'); return L; }
-    if (p.mode === 'trunk') {
+    const cfg = p.cfgMode || p.mode;
+    if (cfg !== 'access') {
       if (p.nativeVlan !== 1) L.push(' switchport trunk native vlan ' + p.nativeVlan);
       if (p.allowed !== 'all') L.push(' switchport trunk allowed vlan ' + p.allowed);
+    }
+    if (cfg !== 'trunk' && p.vlan !== 1) L.push(' switchport access vlan ' + p.vlan);
+    if (cfg === 'trunk') {
       L.push(' switchport mode trunk');
     } else {
-      if (p.vlan !== 1) L.push(' switchport access vlan ' + p.vlan);
-      if (p.vlan !== 1 || (p.ps && p.ps.enabled)) L.push(' switchport mode access');
+      if (cfg === 'access') L.push(' switchport mode access');
+      else if (cfg === 'dynamic desirable') L.push(' switchport mode dynamic desirable');
       if (p.ps && (p.ps.enabled || p.ps.macs.length)) {
         if (p.ps.enabled) L.push(' switchport port-security');
         if (p.ps.max !== 1) L.push(' switchport port-security maximum ' + p.ps.max);
@@ -120,13 +126,17 @@
         }
       }
     }
+    if (p.nonegotiate) L.push(' switchport nonegotiate');
+    if (p.chan) L.push(' channel-group ' + p.chan.group + ' mode ' + p.chan.mode);
     if (p.portfast) L.push(' spanning-tree portfast');
+    if (p.bpduguard != null) L.push(' spanning-tree bpduguard ' + (p.bpduguard ? 'enable' : 'disable'));
     return L;
   }
 
   function runningConfig(dev) {
     const io = dev.ios;
-    const L = ['!', 'version 15.1', 'no service timestamps log datetime msec', 'no service timestamps debug datetime msec'];
+    const ts = dev.logging && dev.logging.timestamps;
+    const L = ['!', 'version 15.1', (ts ? '' : 'no ') + 'service timestamps log datetime msec', (dev.logging && dev.logging.debugTimestamps ? '' : 'no ') + 'service timestamps debug datetime msec'];
     if (io.encrypt) L.push('service password-encryption');
     else L.push('no service password-encryption');
     L.push('!', 'hostname ' + io.hostname, '!');
@@ -141,6 +151,7 @@
         if (p.gateway != null) L.push(' default-router ' + ip(p.gateway));
         if (p.dns != null) L.push(' dns-server ' + ip(p.dns));
         if (p.tftp != null) L.push(' option 150 ip ' + ip(p.tftp));
+        if (p.wlc != null) L.push(' option 43 hex f104.' + ((p.wlc >>> 0).toString(16).padStart(8, '0').match(/..../g).join('.')));
         L.push('!');
       }
       if (!dev.dhcpd.enabled) L.push('no service dhcp', '!');
@@ -153,8 +164,11 @@
     if (!io.cdp) L.push('no cdp run', '!');
     for (const fn of EXT.running.global) L.push(...fn(dev));
     if (dev.type === 'switch') {
-      if (dev.stpPriority !== 32768) L.push('spanning-tree vlan 1 priority ' + dev.stpPriority);
-      L.push('spanning-tree mode pvst', '!');
+      if (EXT.stpRunning) L.push(...EXT.stpRunning(dev));
+      else {
+        if (dev.stpPriority !== 32768) L.push('spanning-tree vlan 1 priority ' + dev.stpPriority);
+        L.push('spanning-tree mode pvst', '!');
+      }
       for (const [v, name] of [...dev.vlans.entries()].sort((a, b) => a[0] - b[0])) {
         if (v === 1) continue;
         L.push('vlan ' + v, ' name ' + name, '!');
@@ -197,6 +211,7 @@
       for (const p of o.passive) L.push(' passive-interface ' + p);
       for (const n of o.networks) L.push(' network ' + ip(n.net) + ' ' + ip(n.wc) + ' area ' + n.area);
       if (o.defaultOriginate) L.push(' default-information originate' + (o.defaultAlways ? ' always' : ''));
+      for (const fn of EXT.running.ospf || []) L.push(...fn(dev));
       L.push('!');
     }
     if (dev.rip && dev.rip.networks.length) {
@@ -207,6 +222,7 @@
       for (const n of r.networks) L.push(' network ' + ip(n));
       if (r.defaultOriginate) L.push(' default-information originate');
       if (!r.autoSummary) L.push(' no auto-summary');
+      for (const fn of EXT.running.rip || []) L.push(...fn(dev));
       L.push('!');
     }
     if (dev.nat && !dev.nat.isEmpty()) L.push(...dev.nat.configLines());
@@ -221,15 +237,18 @@
     if (io.banner) L.push('banner motd ^C' + io.banner + '^C', '!');
     L.push('line con 0');
     if (io.con.password) L.push(' password ' + pwLine(dev, io.con.password));
-    if (io.con.login === 'line') L.push(' login');
-    if (io.con.login === 'local') L.push(' login local');
+    const aaaOn = !!(dev.aaa && dev.aaa.newModel);
+    if (io.con.login === 'line' && !aaaOn) L.push(' login');
+    if (io.con.login === 'local' && !aaaOn) L.push(' login local');
+    for (const fn of EXT.running.line) L.push(...fn(dev, 'con', io.con));
     L.push('!');
     if (dev.type === 'router') L.push('line aux 0', '!');
     L.push('line vty 0 ' + io.vty.last);
     if (io.vty.accessClass) L.push(' access-class ' + io.vty.accessClass + ' in');
     if (io.vty.password) L.push(' password ' + pwLine(dev, io.vty.password));
-    if (io.vty.login === 'line') L.push(' login');
-    if (io.vty.login === 'local') L.push(' login local');
+    if (io.vty.login === 'line' && !aaaOn) L.push(' login');
+    if (io.vty.login === 'local' && !aaaOn) L.push(' login local');
+    for (const fn of EXT.running.line) L.push(...fn(dev, 'vty', io.vty));
     if (io.vty.transport !== 'all') L.push(' transport input ' + io.vty.transport);
     L.push('!', 'end');
     return L;
@@ -305,6 +324,7 @@
 
   /** Вход на линию (console/vty) по её настройкам. user — уже известное имя (SSH). */
   function login(dev, s, io, lineCfg, user, onOk, onDeny) {
+    for (const fn of EXT.login) if (fn(dev, s, io, lineCfg, user, onOk, onDeny)) return;
     if (lineCfg.login === 'local') {
       if (!dev.ios.users.length) { io.out('% Login invalid (не создано ни одного пользователя: username … secret …)'); if (onDeny) onDeny(); return; }
       let tries = 0;
@@ -344,7 +364,8 @@
     s.stage = null;
     if (dev.ios.banner) { io.out(''); io.out(dev.ios.banner); io.out(''); }
     s.mode = 'user';
-    if (dev.ios.con.login !== 'none') {
+    const aaaCon = !!(dev.aaa && dev.aaa.newModel && (dev.ios.con.authList || dev.aaa.login.default));
+    if (dev.ios.con.login !== 'none' || aaaCon) {
       io.out('User Access Verification');
       io.out('');
       login(dev, s, io, dev.ios.con, null, () => { s.mode = 'user'; }, () => { s.stage = 'press-return'; });
@@ -395,10 +416,13 @@
     io.out('Gateway of last resort is ' + (def ? (def.nextHop != null ? ip(def.nextHop) : 'directly connected via ' + def.ifname) + ' to network 0.0.0.0' : 'not set'));
     io.out('');
     for (const r of rows) {
-      if (filter && ({ connected: 'C', static: 'S', ospf: 'O', rip: 'R' }[filter]) !== r.type && !(filter === 'connected' && r.type === 'L')) continue;
-      const code = (r.type + (r.mask === 0 && r.type !== 'C' ? '*' : '') + (r.sub && r.sub !== '*' ? r.sub.replace('*', '') : '')).padEnd(5);
+      if (filter && ({ connected: 'C', static: 'S', ospf: 'O', rip: 'R', eigrp: 'D', bgp: 'B' }[filter]) !== r.type && !(filter === 'connected' && r.type === 'L')) continue;
+      const star = r.mask === 0 && r.type !== 'C' ? '*' : '';
+      const sub = r.sub && r.sub !== '*' ? r.sub.replace('*', '') : '';
+      const code = (r.type + star + (sub ? (star ? '' : ' ') + sub : '')).padEnd(5);
       const net = U.cidr(r.net, r.mask);
       if (r.type === 'C' || r.type === 'L') io.out(code + '   ' + net + ' is directly connected, ' + r.ifname);
+      else if (r.ifname === 'Null0') io.out(code + '   ' + net + ' is a summary, 00:00:' + String(10 + (dev.net.time % 40)).padStart(2, '0') + ', Null0');
       else if (r.type === 'S') io.out(code + '   ' + net + ' [' + r.ad + '/0] ' + (r.nextHop != null ? 'via ' + ip(r.nextHop) : 'is directly connected, ' + r.ifname));
       else io.out(code + '   ' + net + ' [' + r.ad + '/' + r.metric + '] via ' + ip(r.nextHop) + ', 00:00:' + String(10 + (dev.net.time % 40)).padStart(2, '0') + ', ' + r.ifname);
     }
@@ -723,7 +747,7 @@
     }
     if (kw(w, 'startup-config', 3)) { showStartup(dev, io); return; }
     if (kw(w, 'version', 2)) { showVersion(dev, io); return; }
-    if (kw(w, 'clock', 2)) { io.out('*' + dev.clock()); return; }
+    if (kw(w, 'clock', 2)) { io.out((dev.ntpRt && dev.ntpRt.synced ? '' : '*') + dev.clock()); return; }
     if (kw(w, 'history', 2)) { s.history.slice(-20).forEach((l) => io.out('  ' + l)); return; }
     if (kw(w, 'users', 2)) {
       io.out('    Line       User       Host(s)              Idle       Location');
@@ -1159,11 +1183,12 @@
 
   /** Выполнить строки конфигурации (как при copy tftp running-config). Возвращает число байт. */
   /** Информационное сообщение IOS (%LINK-…, % Generating …), а не ошибка команды. */
-  function isInfo(l) { return /^%[A-Z]+-\d|^% (Generating|Access VLAN does not exist|Voice VLAN does not exist|Login disabled|NOTE:)/.test(String(l)); }
+  function isInfo(l) { return /^%[A-Za-z0-9_]+-\d|^% (Generating|Access VLAN does not exist|Voice VLAN does not exist|Login disabled|NOTE:)/.test(String(l)); }
 
   function replayConfig(dev, lines, io, quiet) {
     const s = createSession(dev, { via: 'local' });
     s.stage = null;
+    s.replay = true;
     s.mode = 'config';
     let errors = 0;
     const sub = {
@@ -1479,7 +1504,7 @@
         if (withMutate(io, () => dev.ospfEnable(a[2]))) s.mode = 'ospf';
         return;
       }
-      if (kw(a[1], 'eigrp', 1) || kw(a[1], 'bgp', 1)) { io.out('% Протокол ' + a[1].toUpperCase() + ' в NetLab пока не поддерживается (есть RIP и OSPF).'); return; }
+      if (kw(a[1], 'eigrp', 1) || kw(a[1], 'bgp', 1)) { io.out('% Динамическая маршрутизация доступна на маршрутизаторе или коммутаторе 3560.'); return; }
       invalid(io, a[1]);
       return;
     }
@@ -1674,9 +1699,9 @@
       return;
     }
     if (kw(a[1], 'mode', 1)) {
-      const m = kw(a[2], 'trunk', 1) ? 'trunk' : kw(a[2], 'access', 1) ? 'access' : kw(a[2], 'dynamic', 1) ? 'access' : null;
-      if (!m) { invalid(io, a[2]); return; }
-      each((i) => dev.setPortMode(i, neg ? 'access' : m));
+      const m = kw(a[2], 'trunk', 1) ? 'trunk' : kw(a[2], 'access', 1) ? 'access' : kw(a[2], 'dynamic', 1) ? (kw(a[3], 'desirable', 1) ? 'dynamic desirable' : kw(a[3], 'auto', 1) ? 'dynamic auto' : null) : null;
+      if (!m && !neg) { if (kw(a[2], 'dynamic', 1)) incomplete(io); else invalid(io, a[2]); return; }
+      each((i) => dev.setPortMode(i, neg ? 'dynamic auto' : m));
       return;
     }
     if (kw(a[1], 'access', 1) && kw(a[2], 'vlan', 1)) {
@@ -1769,6 +1794,7 @@
     const a = neg ? t.slice(1) : t;
     const L = s.line === 'con' ? dev.ios.con : s.line === 'vty' ? dev.ios.vty : null;
     if (!L) return; // line aux — принимаем молча
+    for (const fn of EXT.line) if (fn(dev, s, a, neg, io, L, CTX)) return;
     if (kw(a[0], 'password', 2)) {
       if (neg) { withMutate(io, () => { L.password = null; }); return; }
       let v = a[1];
@@ -1808,6 +1834,7 @@
     const neg = kw(t[0], 'no', 2);
     const a = neg ? t.slice(1) : t;
     const w = a[0];
+    for (const fn of EXT.routerCmd || []) if (fn(dev, s, a, neg, io, CTX)) return;
     if (s.mode === 'rip') {
       if (kw(w, 'network', 1)) {
         const n = U.parseIp(a[1] || '');
@@ -1889,6 +1916,17 @@
     }
     if (kw(t[0], 'option', 1)) {
       // option 150 ip A.B.C.D — адрес TFTP-сервера (CME) для IP-телефонов
+      if (t[1] === '43') {
+        // option 43 hex f104.C0A8.0105 (тип f1, длина 4, адрес WLC) или option 43 ip A.B.C.D
+        let v = null;
+        if (kw(t[2], 'hex', 1)) { const hx = String(t[3] || '').replace(/\./g, '').toLowerCase(); const m = /^f1(0[48])([0-9a-f]{8})/.exec(hx); if (m) v = parseInt(m[2], 16) >>> 0; }
+        else v = U.parseIp(t[kw(t[2], 'ip', 1) ? 3 : 2] || '');
+        if (v == null) { io.out('% Option 43: hex f104.<адрес WLC в hex> (например f104.c0a8.0105 для 192.168.1.5) или ip A.B.C.D'); return; }
+        const old43 = cur();
+        if (!old43) { p.wlc = v; return; }
+        withMutate(io, () => dev.dhcpd.setPool(Object.assign({}, old43, { wlc: v }), p.name));
+        return;
+      }
       if (t[1] !== '150') { if (/^\d+$/.test(t[1] || '')) return; invalid(io, t[1]); return; }
       const v = U.parseIp(t[kw(t[2], 'ip', 1) ? 3 : 2] || '');
       if (v == null) { incomplete(io); return; }
@@ -1918,10 +1956,11 @@
   function execConfigLine(dev, s, line, io) {
     const t = tokenize(line);
     if (!t.length) return null;
-    if (kw(t[0], 'end', 2)) { s.mode = 'exec'; s.ifs = null; s.pool = null; s.acl = null; s.ctx = null; return null; }
+    if (kw(t[0], 'end', 2)) { s.mode = 'exec'; s.ifs = null; s.pool = null; s.acl = null; s.ctx = null; if (EXT.onConfigured) EXT.onConfigured(dev, s); return null; }
     if (kw(t[0], 'exit', 3)) {
       s.ctx = null;
-      if (s.mode === 'config') s.mode = 'exec';
+      if (s.mode === 'config') { s.mode = 'exec'; if (EXT.onConfigured) EXT.onConfigured(dev, s); }
+      else if (EXT.modes[s.mode] && EXT.modes[s.mode].parent) s.mode = EXT.modes[s.mode].parent; // вложенный подрежим: на уровень выше
       else {
         if (s.mode === 'pool' && s.pool && !s.pool.committed) io.out('% Пул «' + s.pool.name + '» не создан: не задана команда network.');
         s.mode = 'config';
@@ -2062,7 +2101,7 @@
   /* ================= серверы Telnet / SSH на устройстве ================= */
 
   NS.bindIosServices = function (dev) {
-    if (!dev.ios || !dev.tcp || dev.type === 'wrouter') return;
+    if (!dev.ios || !dev.tcp || dev.type === 'wrouter' || dev.type === 'asa') return;
     for (const [port, proto] of [[NS.packets.PORT_TELNET, 'telnet'], [NS.packets.PORT_SSH, 'ssh']]) {
       dev.tcp.listen(port, (conn) => serveVty(dev, conn, proto));
     }
@@ -2122,7 +2161,7 @@
         } else {
           buf.push('User Access Verification', '');
           login(dev, s, io, vty, null, () => { s.mode = 'user'; }, () => { s.closed = true; });
-          if (vty.login === 'line' && !vty.password) s.closed = true;
+          if (vty.login === 'line' && !vty.password && !s.pending) s.closed = true;
         }
         flush(true);
         return;
@@ -2144,9 +2183,10 @@
   /** Помощники для модулей-расширений. */
   const CTX = {
     kw, tokenize, pad, padL, shortIf, ip, invalid, incomplete, withMutate, parseIfName, ifaceOf,
-    askPassword, iosPing: (dev, args, io) => iosPing(dev, args, io), iosTraceroute: (dev, args, io) => iosTraceroute(dev, args, io),
+    askPassword, login: (dev, s, io, lineCfg, user, onOk, onDeny) => login(dev, s, io, lineCfg, user, onOk, onDeny),
+    iosPing: (dev, args, io) => iosPing(dev, args, io), iosTraceroute: (dev, args, io) => iosTraceroute(dev, args, io),
   };
 
-  NS.cliIos = { createSession, prompt, exec, complete, help, runningConfig, parseIfName, replayConfig, startRemote, remoteLine, isInfo, ext: EXT, ctx: CTX };
+  NS.cliIos = { createSession, prompt, exec, complete, help, runningConfig, parseIfName, replayConfig, startRemote, remoteLine, isInfo, ext: EXT, ctx: CTX, portLinesFor: switchPortLines, showProtocols };
   NS.ios = { runningConfig };
 })(globalThis.NetLab = globalThis.NetLab || {});

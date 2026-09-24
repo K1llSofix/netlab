@@ -212,7 +212,7 @@
       for (const id of this.selection) {
         const d = this.net.getDevice(id);
         if (!d || !d.ports.some((p) => p.radio)) continue;
-        this.gRange.appendChild(s('circle', { class: 'wifi-range' + (d.power && d.radioEnabled && d.radioEnabled() ? '' : ' off'), cx: d.x, cy: d.y, r: NS.Network.WIFI_RANGE }));
+        this.gRange.appendChild(s('circle', { class: 'wifi-range' + (d.power && d.radioEnabled && d.radioEnabled() ? '' : ' off'), cx: d.x, cy: d.y, r: d.type === 'celltower' ? this.net.cellRange() : this.net.wifiRange() }));
       }
     }
 
@@ -245,6 +245,14 @@
         const cx = dceA ? a.x + ux * (d + 13) : b.x - ux * (d + 13);
         const cy = dceA ? a.y + uy * (d + 13) : b.y - uy * (d + 13);
         this.gLinks.appendChild(s('g', { class: 'dce-clock', transform: 'translate(' + cx.toFixed(1) + ',' + cy.toFixed(1) + ')' }, s('title', null, 'DCE — эта сторона задаёт clock rate'), s('circle', { r: 6 }), s('path', { d: 'M0 -3.5V0l2.4 1.6' })));
+      }
+      const phys = net.physical;
+      if (phys && phys.enabled && !l.wireless && NS.physical) {
+        const m = NS.physical.linkLength(net, l);
+        const max = NS.physical.MAX_LEN[l.cable];
+        const px = uy * 12;
+        const py = -ux * 12;
+        this.gLabels.appendChild(s('text', { class: 'port-label len-label' + (max && m > max ? ' too-long' : ''), x: (a.x + b.x) / 2 + px, y: (a.y + b.y) / 2 + py + 3, 'text-anchor': 'middle' }, Math.round(m) + ' м'));
       }
       if (this.app.settings.showPorts && len > 110 && !l.wireless) {
         const px = -uy * 11;
@@ -376,6 +384,7 @@
       if (t === 'cable') text = (this.cableSrc ? 'Кабель «' + cab.label + '»: выберите второе устройство · <b>Esc</b> — отмена' : 'Кабель «' + cab.label + '»: выберите первое устройство');
       else if (t === 'pdu') text = this.pduSrc ? 'Проверка связи: выберите получателя · <b>Esc</b> — отмена' : 'Проверка связи (ping): выберите отправителя';
       else if (t === 'mail') text = 'Сообщения: выберите компьютер, с которого отправить';
+      else if (t === 'cpdu') text = 'Сложный PDU: выберите устройство-отправителя';
       else if (t === 'inspect') text = 'Инспектор: щёлкните по устройству, чтобы посмотреть его таблицы (ARP, MAC, маршрутизация, NAT…)';
       else if (t === 'delete') text = 'Удаление: щёлкните по устройству, кабелю, заметке или фигуре';
       else if (t === 'note') text = 'Щёлкните по схеме, чтобы добавить заметку';
@@ -476,6 +485,7 @@
         case 'cable': this.cableClick(e, tg); break;
         case 'delete': this.deleteClick(tg); break;
         case 'pdu': this.pduClick(tg); break;
+        case 'cpdu': if (tg.kind === 'dev' && UI.complexPdu) UI.complexPdu(this.app, tg.id); break;
         case 'mail': this.mailClick(tg); break;
         case 'inspect': this.inspectClick(e, tg); break;
         case 'shape':

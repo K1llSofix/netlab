@@ -47,7 +47,7 @@ importScripts('../core/script-rt.js');
     if (m.type === 'inputs') inputs = m.values || {};
     else if (m.type === 'run' && !prog) {
       inputs = m.inputs || {};
-      prog = RT.run(String(m.code || ''), io);
+      prog = RT.run(String(m.code || ''), io, m.lang === 'python' ? 'python' : 'js');
     } else if (m.type === 'stop' && prog) {
       prog.stop();
     }

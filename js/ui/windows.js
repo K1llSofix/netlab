@@ -58,6 +58,7 @@
       }
       this.setTitle(opts.title, opts.sub, opts.icon);
       document.getElementById('windows').appendChild(this.el);
+      this.fit();
       this.focus();
       this.select(opts.initialTab || (this.tabs[0] && this.tabs[0].id));
     }
@@ -85,6 +86,16 @@
       const w = this.el.offsetWidth || 400;
       x = Math.max(-w + 80, Math.min(x, window.innerWidth - 80));
       y = Math.max(0, Math.min(y, window.innerHeight - 40));
+      this.el.style.left = x + 'px';
+      this.el.style.top = y + 'px';
+    }
+
+    /** Открыть окно целиком в видимой области (сохранённое положение могло остаться от другого размера окна программы). */
+    fit() {
+      const w = this.el.offsetWidth;
+      const hh = this.el.offsetHeight;
+      const x = Math.max(0, Math.min(parseInt(this.el.style.left, 10) || 0, window.innerWidth - w));
+      const y = Math.max(0, Math.min(parseInt(this.el.style.top, 10) || 0, window.innerHeight - hh));
       this.el.style.left = x + 'px';
       this.el.style.top = y + 'px';
     }

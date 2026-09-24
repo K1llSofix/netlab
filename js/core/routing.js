@@ -44,6 +44,7 @@
       if (sw.ifaces && sw.ifaces.some((x) => x.kind === 'svi' && x.vlan === vlan && sw.ifaceUp(x))) points.add(sw.id + '|svi|' + vlan);
       sw.ports.forEach((q, j) => {
         if (j === exceptPort || !sw.portCarries || !sw.portCarries(q, vlan)) return;
+        if (sw.stpBlocked && sw.stpBlocked(q, vlan)) return;
         const tag = q.mode === 'trunk' && vlan !== q.nativeVlan ? vlan : null;
         out(sw, j, tag, null);
       });
@@ -74,6 +75,7 @@
           vlan = p.vlan;
         }
         if (d.vlans && !d.vlans.has(vlan)) continue;
+        if (d.stpBlocked && d.stpBlocked(p, vlan)) continue;
         sviSpread(d, vlan, p.radio ? -1 : port);
         if (p.radio) {
           for (const wid of p.wlinks || []) {

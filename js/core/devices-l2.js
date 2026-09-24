@@ -252,7 +252,7 @@
       const s = String(cfg.ssid);
       if (!s.trim() || s.length > 32) throw new Error('SSID: от 1 до 32 символов');
     }
-    if (cfg.security !== undefined && cfg.security !== 'open' && cfg.security !== 'wpa2') throw new Error('Защита: open или wpa2');
+    if (cfg.security !== undefined && cfg.security !== 'open' && cfg.security !== 'wpa2' && cfg.security !== 'wpa2-ent') throw new Error('Защита: open, wpa2 или wpa2-ent');
     if (cfg.security === 'wpa2' && cfg.key !== undefined && (String(cfg.key).length < 8 || String(cfg.key).length > 63)) {
       throw new Error('Ключ WPA2 (пароль сети): от 8 до 63 символов');
     }

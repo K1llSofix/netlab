@@ -31,7 +31,13 @@
 
     initPort(p) {
       if (!NS.Network.isData(p)) return;
-      p.mode = 'access';
+      p.mode = 'access'; // фактический режим (после DTP)
+      p.cfgMode = 'dynamic auto'; // настроенный: access | trunk | dynamic auto | dynamic desirable
+      p.nonegotiate = false;
+      p.chan = null; // channel-group { group, mode }
+      p.bundle = null; // собранный EtherChannel { group, primary, members }
+      p.bpduguard = null;
+      p.stpV = null;
       p.vlan = 1;
       p.voiceVlan = null;
       p.nativeVlan = 1;
@@ -70,7 +76,7 @@
     ifaceUp(f) {
       if (f && f.kind === 'svi') {
         if (!f.adminUp || !this.power || !this.vlans.has(f.vlan)) return false;
-        return this.ports.some((p) => p.oper && p.stp !== 'blocking' && this.portCarries(p, f.vlan));
+        return this.ports.some((p) => p.oper && !this.stpBlocked(p, f.vlan) && this.portCarries(p, f.vlan));
       }
       return super.ifaceUp(f);
     }
@@ -167,12 +173,26 @@
     }
 
     setPortMode(i, mode) {
-      if (mode !== 'access' && mode !== 'trunk') throw new Error('Режим порта: access или trunk');
+      if (!['access', 'trunk', 'dynamic auto', 'dynamic desirable'].includes(mode)) throw new Error('Режим порта: access, trunk, dynamic auto или dynamic desirable');
       const p = this.dataPort(i);
-      if (mode === 'trunk' && p.ps.enabled) throw new Error('На порту включён port-security — транк невозможен');
-      p.mode = mode;
+      if (mode !== 'access' && p.ps.enabled) throw new Error('На порту включён port-security — режим может быть только access');
+      p.cfgMode = mode;
+      p.mode = mode === 'trunk' ? 'trunk' : 'access';
       this.flushMacTable();
       this.net.markRouting();
+      this.net.refreshTopology();
+    }
+
+    /** Заблокирован ли порт STP в данном VLAN (PVST+: у каждого VLAN своё дерево). */
+    stpBlocked(p, vlan) {
+      if (p.stpV) return p.stpV[vlan] === 'blocking';
+      return p.stp === 'blocking';
+    }
+
+    /** Порт, который представляет EtherChannel в таблице MAC и при рассылке. */
+    logicalPort(i) {
+      const p = this.ports[i];
+      return p && p.bundle ? p.bundle.primary : i;
     }
 
     setAccessVlan(i, v) {
@@ -221,7 +241,7 @@
     /** Настройка port-security. cfg: {enabled, max, sticky, violation}. */
     setPortSecurity(i, cfg) {
       const p = this.dataPort(i);
-      if (cfg.enabled && p.mode !== 'access') throw new Error('Command rejected: ' + p.name + ' is a dynamic port. (port-security работает только на access-порту — введите switchport mode access)');
+      if (cfg.enabled && p.cfgMode !== 'access') throw new Error('Command rejected: ' + p.name + ' is a dynamic port. (port-security работает только на access-порту — введите switchport mode access)');
       if (cfg.max !== undefined && !(cfg.max >= 1 && cfg.max <= 132)) throw new Error('Максимум адресов: 1–132');
       if (cfg.violation !== undefined && !['shutdown', 'restrict', 'protect'].includes(cfg.violation)) throw new Error('violation: shutdown, restrict или protect');
       Object.assign(p.ps, cfg);
@@ -275,6 +295,7 @@
         this.drop(frame, 'Порт ' + port.name + ' заблокирован STP (защита от петли)');
         return;
       }
+      const lp = this.logicalPort(i);
       let vlan;
       if (port.mode === 'trunk') {
         vlan = frame.vlan != null ? frame.vlan : port.nativeVlan;
@@ -296,10 +317,15 @@
         this.drop(frame, 'VLAN ' + vlan + ' не создан на ' + this.name);
         return;
       }
+      if (this.stpBlocked(port, vlan)) {
+        this.drop(frame, 'Порт ' + port.name + ' заблокирован STP в VLAN ' + vlan + ' (защита от петли)');
+        return;
+      }
       if (port.mode === 'access' && vlan === port.vlan && port.ps && port.ps.enabled && !this.portSecurityOk(i, port, frame)) return;
+      for (const hk of Switch.ingress) if (hk.call(this, i, port, vlan, frame, lp) === false) return;
 
       if (!U.isMulticastMac(frame.src)) {
-        this.macTable.set(vlan + '|' + frame.src, { mac: frame.src, vlan, port: i, time: this.net.time });
+        this.macTable.set(vlan + '|' + frame.src, { mac: frame.src, vlan, port: lp, time: this.net.time });
       }
 
       const dst = frame.dst;
@@ -313,7 +339,7 @@
       }
 
       if (U.isMulticastMac(dst)) {
-        this.flood(i, vlan, frame, 'Широковещательный кадр — рассылка во все порты VLAN ' + vlan);
+        this.flood(lp, vlan, frame, 'Широковещательный кадр — рассылка во все порты VLAN ' + vlan);
         return;
       }
       const key = vlan + '|' + dst;
@@ -323,7 +349,7 @@
         e = null;
       }
       if (e) {
-        if (e.port === i) {
+        if (e.port === lp) {
           this.drop(frame, 'Получатель находится за тем же портом — кадр отфильтрован');
           return;
         }
@@ -331,7 +357,7 @@
         if (this.egress(e.port, vlan, frame, 'MAC ' + dst + ' есть в таблице (VLAN ' + vlan + ') → порт ' + out.name)) return;
         this.macTable.delete(key);
       }
-      this.flood(i, vlan, frame, 'MAC ' + dst + ' нет в таблице — рассылка во все порты VLAN ' + vlan);
+      this.flood(lp, vlan, frame, 'MAC ' + dst + ' нет в таблице — рассылка во все порты VLAN ' + vlan);
     }
 
     portSecurityOk(i, port, frame) {
@@ -360,8 +386,17 @@
     }
 
     egress(j, vlan, frame, why) {
-      const p = this.ports[j];
-      if (!p.oper || p.stp === 'blocking' || p.routed) return false;
+      let p = this.ports[j];
+      if (p.bundle) {
+        // EtherChannel: кадр уходит в канал один раз — через один из портов (хэш MAC-адресов)
+        if (p.bundle.primary !== j) return false;
+        const up = p.bundle.members.filter((k) => this.ports[k].oper);
+        if (!up.length) return false;
+        const hash = (s) => [...String(s || '')].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
+        const k = up[((hash(frame.src) ^ hash(frame.dst)) >>> 0) % up.length];
+        if (k !== j) { why = (why || '') + ' · EtherChannel Po' + p.bundle.group + ' → ' + this.ports[k].name; j = k; p = this.ports[k]; }
+      }
+      if (!p.oper || p.stp === 'blocking' || p.routed || this.stpBlocked(p, vlan)) return false;
       let tag;
       if (p.mode === 'trunk') {
         if (!U.vlanInList(p.allowed, vlan)) return false;
@@ -395,8 +430,17 @@
     serializePort(p) {
       const o = super.serializePort(p);
       if (!NS.Network.isData(p)) return o;
-      Object.assign(o, { mode: p.mode, vlan: p.vlan, nativeVlan: p.nativeVlan, allowed: p.allowed });
+      Object.assign(o, { mode: p.cfgMode === 'trunk' ? 'trunk' : 'access', vlan: p.vlan, nativeVlan: p.nativeVlan, allowed: p.allowed });
       if (p.voiceVlan != null) o.voiceVlan = p.voiceVlan;
+      // настроенный режим DTP записывается только там, где его нельзя восстановить по остальным полям (совместимость с файлами 1.x)
+      const inferred = Switch.inferMode(o);
+      if (p.cfgMode !== inferred) {
+        if (p.cfgMode === 'access') o.static = true;
+        else if (p.cfgMode !== 'trunk') o.dtp = p.cfgMode.replace('dynamic ', '');
+      }
+      if (p.nonegotiate) o.nonegotiate = true;
+      if (p.chan) o.chan = Object.assign({}, p.chan);
+      if (p.bpduguard != null) o.bpduguard = p.bpduguard;
       if (p.routed) o.routed = true;
       if (p.ps && (p.ps.enabled || p.ps.macs.some((m) => m.sticky || m.manual))) {
         o.ps = { enabled: p.ps.enabled, max: p.ps.max, sticky: p.ps.sticky, violation: p.ps.violation, macs: p.ps.macs.filter((m) => m.sticky || m.manual).map((m) => Object.assign({}, m)) };
@@ -407,7 +451,13 @@
     loadPort(p, sp) {
       super.loadPort(p, sp);
       if (!NS.Network.isData(p)) return;
-      p.mode = sp.mode === 'trunk' ? 'trunk' : 'access';
+      p.cfgMode = Switch.inferMode(sp);
+      p.mode = p.cfgMode === 'trunk' ? 'trunk' : 'access';
+      p.nonegotiate = !!sp.nonegotiate;
+      p.chan = sp.chan && Number.isInteger(sp.chan.group) ? { group: sp.chan.group, mode: String(sp.chan.mode || 'on') } : null;
+      p.bpduguard = sp.bpduguard == null ? null : !!sp.bpduguard;
+      p.bundle = null;
+      p.stpV = null;
       p.vlan = Number(sp.vlan) || 1;
       p.voiceVlan = Number(sp.voiceVlan) || null;
       p.nativeVlan = Number(sp.nativeVlan) || 1;
@@ -467,10 +517,23 @@
       if (typeof d.baseMac === 'string') this.baseMac = d.baseMac;
     }
   }
+  /** Настроенный режим порта из сохранённых данных (файлы 1.x знали только access и trunk). */
+  Switch.inferMode = function (sp) {
+    if (sp.mode === 'trunk') return 'trunk';
+    if (sp.dtp) return 'dynamic ' + sp.dtp;
+    if (sp.static) return 'access';
+    // раньше «switchport mode access» писался только вместе с VLAN или port-security
+    if ((Number(sp.vlan) || 1) !== 1 || (sp.ps && sp.ps.enabled) || sp.voiceVlan != null) return 'access';
+    return 'dynamic auto';
+  };
+
   NS.applyIos(Switch);
   Switch.namePrefix = 'Switch';
   Switch.title = 'Коммутатор';
 
   NS.Switch = Switch;
+  /** Проверки кадра на входе коммутатора (DHCP snooping, DAI, 802.1X): (i, port, vlan, frame, lp) → false — кадр поглощён. */
+  Switch.ingress = [];
+
   NS.deviceTypes.switch = Switch;
 })(globalThis.NetLab = globalThis.NetLab || {});

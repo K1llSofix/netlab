@@ -132,7 +132,7 @@
     const errors = [];
     const log = app.iosLog(dev.id);
     const io = {
-      out: (l) => { if (/^%/.test(l) && !NS.cliIos.isInfo(l)) errors.push(l.replace(/^%\s*/, '')); },
+      out: (l) => { if ((/^%/.test(l) && !NS.cliIos.isInfo(l)) || /^ERROR:/.test(l)) errors.push(l.replace(/^(%|ERROR:)\s*(%\s*)?/, '')); },
       write: () => {},
       clear: () => {},
       done: () => {},

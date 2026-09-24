@@ -94,6 +94,58 @@ test('IPsec site-to-site: шифрование интересного трафи
   assert.equal(again.findByName('R1').ifaceByName('GigabitEthernet0/0').cryptoMap, 'VPN');
 });
 
+test('IKE: фаза 1 (Main Mode, 6 сообщений) и фаза 2 (Quick Mode, 3), ошибка фазы 2, debug, show crypto session', () => {
+  const { net, r1, r2, pc1 } = wan();
+  cli(r1, ipsec('10.0.2.1', 'cisco123', '192.168.1.0', '192.168.2.0'));
+  cli(r2, ipsec('10.0.1.1', 'cisco123', '192.168.2.0', '192.168.1.0'));
+  // у R2 другой transform-set — фаза 1 пройдёт, фаза 2 нет
+  cli(r2, ['enable', 'conf t', 'crypto ipsec transform-set TS esp-3des esp-md5-hmac', 'exit', 'end']);
+  cli(r1, ['enable', 'debug crypto isakmp', 'debug crypto ipsec']);
+  const msgs = [];
+  const off = net.on((t, e) => { if (t === 'log' && e.type === 'tx' && e.from === r1.id || t === 'log' && e.type === 'tx' && e.from === r2.id) { const d = e.frame.payload && e.frame.payload.payload && e.frame.payload.payload.data; if (d && d.isakmp && e.proto === 'ISAKMP') msgs.push(d.isakmp); } });
+  r1.consoleLines.length = 0;
+  assert.equal(ping(net, pc1, '192.168.2.10', { count: 1 }).replies.length, 0);
+  const uniq = (a) => a.filter((x, i) => a.indexOf(x) === i);
+  assert.deepEqual(uniq(msgs), ['MM1', 'MM2', 'MM3', 'MM4', 'MM5', 'MM6', 'QM1', 'NOTIFY']);
+  let out = cli(r1, ['enable', 'show crypto isakmp sa', 'show crypto ipsec sa', 'show crypto session']).text;
+  assert.match(out, /10\.0\.2\.1\s+10\.0\.1\.1\s+QM_IDLE\s+\d+\s+0\s+ACTIVE/, out);
+  assert.match(out, /фаза 2 \(IPsec\) не согласована: не совпадает transform-set/);
+  assert.match(out, /Session status: UP-IDLE/);
+  let con = r1.consoleLines.join('\n');
+  assert.match(con, /beginning Main Mode exchange/);
+  assert.match(con, /SA authentication status: authenticated/);
+  assert.match(con, /Quick Mode with 10\.0\.2\.1 failed: не совпадает transform-set/);
+  out = cli(r2, ['enable', 'show crypto isakmp sa']).text;
+  assert.match(out, /10\.0\.2\.1\s+10\.0\.1\.1\s+QM_IDLE/, 'у ответчика dst — он сам, src — инициатор');
+
+  // исправили transform-set: снова только фаза 2 — ISAKMP SA уже есть
+  cli(r2, ['enable', 'conf t', 'crypto ipsec transform-set TS esp-aes esp-sha-hmac', 'exit', 'end']);
+  msgs.length = 0;
+  r1.consoleLines.length = 0;
+  const ok = ping(net, pc1, '192.168.2.10', { count: 3 });
+  assert.ok(ok.replies.length >= 2, 'ответы через IPsec: ' + ok.replies.length);
+  assert.deepEqual(uniq(msgs), ['QM1', 'QM2', 'QM3']);
+  con = r1.consoleLines.join('\n');
+  assert.match(con, /beginning Quick Mode exchange/);
+  assert.match(con, /IPSEC\(create_sa\): sa created, \(sa\) sa_dest= 10\.0\.2\.1, sa_proto= 50/);
+  out = cli(r1, ['enable', 'show crypto session', 'show debugging']).text;
+  assert.match(out, /Session status: UP-ACTIVE/);
+  assert.match(out, /IKEv1 SA: local 10\.0\.1\.1\/500 remote 10\.0\.2\.1\/500 Active/);
+  assert.match(out, /Crypto ISAKMP debugging is on/);
+  // clear crypto isakmp — удаляется только фаза 1, IPsec SA продолжает работать
+  cli(r1, ['enable', 'clear crypto isakmp', 'undebug all']);
+  out = cli(r1, ['enable', 'show crypto session']).text;
+  assert.match(out, /UP-NO-IKE/);
+  assert.equal(ping(net, pc1, '192.168.2.10', { count: 1 }).replies.length, 1);
+  // clear crypto sa на R1: фаза 2 заново; у R2 ISAKMP SA есть, у R1 — нет, поэтому сначала снова фаза 1
+  cli(r1, ['enable', 'clear crypto sa']);
+  msgs.length = 0;
+  const again = ping(net, pc1, '192.168.2.10', { count: 3 });
+  off();
+  assert.ok(again.replies.length >= 2);
+  assert.deepEqual(uniq(msgs), ['MM1', 'MM2', 'MM3', 'MM4', 'MM5', 'MM6', 'QM1', 'QM2', 'QM3']);
+});
+
 test('Easy VPN: удалённый клиент получает адрес из пула и ходит во внутреннюю сеть', () => {
   const { net, r2, isp, pc1 } = wan();
   // PC1 — «домашний» компьютер за R1 (провайдер знает его сеть), внутренняя сеть офиса — за R2

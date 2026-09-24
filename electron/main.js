@@ -8,6 +8,7 @@ const fs = require('fs');
 const os = require('os');
 
 const updates = require('./updater');
+const multiuser = require('./multiuser');
 
 const ROOT = path.join(__dirname, '..');
 const SMOKE = process.env.NETLAB_SMOKE || '';
@@ -20,7 +21,7 @@ const FILTERS = [
 ];
 
 let win = null;
-let state = { dirty: false, filePath: null };
+let state = { dirty: false, filePath: null, hasContent: false };
 let allowClose = false;
 let pendingOpen = null;
 
@@ -117,8 +118,8 @@ function buildMenu() {
 
 function onClose(e) {
   if (allowClose || SMOKE || SMOKE_UPDATE) return;
-  // Без открытого файла схема и так хранится в автосохранении — спрашивать не о чем.
-  if (!state.dirty || !state.filePath) return;
+  // Спрашиваем, если есть несохранённые изменения: в открытом файле или в новой непустой схеме.
+  if (!state.dirty || (!state.filePath && !state.hasContent)) return;
   e.preventDefault();
   const r = dialog.showMessageBoxSync(win, {
     type: 'question',
@@ -127,8 +128,10 @@ function onClose(e) {
     cancelId: 2,
     noLink: true,
     title: 'NetLab',
-    message: 'Сохранить изменения в «' + path.basename(state.filePath) + '»?',
-    detail: 'Если не сохранить, последние изменения останутся только в автосохранении NetLab.',
+    message: state.filePath ? 'Сохранить изменения в «' + path.basename(state.filePath) + '»?' : 'Сохранить схему в файл?',
+    detail: state.filePath
+      ? 'Если не сохранить, последние изменения останутся только в автосохранении NetLab.'
+      : 'Эта схема ещё ни разу не сохранялась в файл. Если не сохранить, она останется только в автосохранении NetLab и пропадёт, когда вы создадите или откроете другую схему.',
   });
   if (r === 0) send('save-and-close');
   else if (r === 1) {
@@ -211,7 +214,7 @@ ipcMain.handle('file:save', async (_e, opts) => {
 });
 
 ipcMain.on('app:state', (_e, s) => {
-  state = { dirty: !!(s && s.dirty), filePath: s && typeof s.filePath === 'string' ? s.filePath : null };
+  state = { dirty: !!(s && s.dirty), filePath: s && typeof s.filePath === 'string' ? s.filePath : null, hasContent: !!(s && s.hasContent) };
 });
 
 ipcMain.on('app:close-now', () => {
@@ -225,6 +228,17 @@ ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.handle('app:release-notes', () => {
   try { return fs.readFileSync(path.join(ROOT, 'build', 'release-notes.md'), 'utf8'); } catch (e) { return ''; }
 });
+
+/* ---------- многопользовательский режим ---------- */
+
+const mu = multiuser.init(() => win);
+ipcMain.handle('mu:listen', (_e, o) => { mu.setName(o && o.name); return mu.listen(o && o.port, o && o.password); });
+ipcMain.handle('mu:stop', () => mu.stopListen());
+ipcMain.handle('mu:connect', (_e, o) => { mu.setName(o && o.name); return mu.connect(o && o.host, o && o.port, o && o.password); });
+ipcMain.handle('mu:disconnect', (_e, id) => mu.disconnect(id));
+ipcMain.handle('mu:status', () => mu.status());
+ipcMain.on('mu:send', (_e, m) => { if (m && m.msg) mu.send(m.msg, m.to || null); });
+app.on('before-quit', () => mu.closeAll());
 
 /* ---------- обновления ---------- */
 

@@ -203,12 +203,56 @@
 
   const OPS = { '=': (a, b) => a === b, '!=': (a, b) => a !== b, '>': (a, b) => a > b, '<': (a, b) => a < b, '>=': (a, b) => a >= b, '<=': (a, b) => a <= b };
 
+  /* Правило: { name, enabled, match: 'all' (И) | 'any' (ИЛИ), conds: [условие], actions: [{ thing, prop, value }] }.
+   * Условие — свойство устройства { thing, prop, op, value } или расписание { type: 'time', from: 'ЧЧ:ММ', to: 'ЧЧ:ММ', days: [0..6] }
+   * (по часам сервера; days пусто — каждый день, 0 — воскресенье). Старый формат { cond } тоже принимается. */
+  const hm = (x) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(x == null ? '' : x).trim());
+    return m && Number(m[1]) <= 23 && Number(m[2]) <= 59 ? Number(m[1]) * 60 + Number(m[2]) : null;
+  };
+  const hmStr = (n) => String(Math.floor(n / 60)).padStart(2, '0') + ':' + String(n % 60).padStart(2, '0');
+  const DAYS = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+
+  function normCond(c, name) {
+    if (c && c.type === 'time') {
+      const from = hm(c.from);
+      const to = hm(c.to);
+      if (from == null || to == null) throw new Error('Правило «' + name + '»: время укажите как ЧЧ:ММ');
+      const days = Array.isArray(c.days) ? [...new Set(c.days.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort() : [];
+      return { type: 'time', from: hmStr(from), to: hmStr(to), days };
+    }
+    if (!c || !c.thing || !c.prop || !OPS[c.op]) throw new Error('Правило «' + name + '»: в условии укажите устройство, свойство и сравнение');
+    return { thing: String(c.thing), prop: String(c.prop), op: c.op, value: c.value };
+  }
+
   function normRule(r) {
-    const cond = r.cond || {};
-    if (!r.name || !cond.thing || !cond.prop || !OPS[cond.op]) throw new Error('Правило «' + (r.name || '?') + '»: укажите устройство, свойство и условие');
+    const name = String((r && r.name) || '').trim();
+    if (!name) throw new Error('У правила должно быть имя');
+    const list = Array.isArray(r.conds) ? r.conds : r.cond ? [r.cond] : [];
+    if (!list.length) throw new Error('Правило «' + name + '»: добавьте хотя бы одно условие');
+    const conds = list.map((c) => normCond(c, name));
     const actions = (r.actions || []).filter((a) => a && a.thing && a.prop).map((a) => ({ thing: String(a.thing), prop: String(a.prop), value: a.value }));
-    if (!actions.length) throw new Error('Правило «' + r.name + '»: нет действий');
-    return { name: String(r.name).slice(0, 40), enabled: r.enabled !== false, cond: { thing: String(cond.thing), prop: String(cond.prop), op: cond.op, value: cond.value }, actions };
+    if (!actions.length) throw new Error('Правило «' + name + '»: нет действий');
+    return { name: name.slice(0, 40), enabled: r.enabled !== false, match: r.match === 'any' ? 'any' : 'all', conds, actions };
+  }
+
+  const condsOf = (r) => r.conds || (r.cond ? [r.cond] : []);
+  const condText = (c) => (c.type === 'time' ? 'время ' + c.from + '–' + c.to + (c.days && c.days.length ? ' (' + c.days.map((d) => DAYS[d]).join(', ') + ')' : '') : c.thing + '.' + c.prop + ' ' + c.op + ' ' + c.value);
+  const ruleText = (r) => condsOf(r).map(condText).join(r.match === 'any' ? ' ИЛИ ' : ' И ');
+
+  /** Часы устройства: минуты от полуночи, день недели (0 — воскресенье), миллисекунды. */
+  function clockOf(node) {
+    const abs = Date.UTC(1993, 2, 1) + node.net.time * 10 + (node.clockOffset || 0);
+    const d = new Date(abs);
+    const min = d.getUTCHours() * 60 + d.getUTCMinutes();
+    return { abs, min, day: d.getUTCDay(), text: hmStr(min) + ', ' + DAYS[d.getUTCDay()] };
+  }
+
+  function timeHolds(c, now) {
+    const from = hm(c.from);
+    const to = hm(c.to);
+    const inRange = from === to ? true : from < to ? now.min >= from && now.min < to : now.min >= from || now.min < to;
+    return inRange && (!c.days || !c.days.length || c.days.includes(now.day));
   }
 
   class IotService {
@@ -227,6 +271,7 @@
         this.node.tcp.unlisten(PORT);
         for (const t of this.things.values()) if (!t.conn.done) t.conn.close();
         this.things = new Map();
+        this.reschedule();
         return;
       }
       this.node.tcp.listen(PORT, (conn) => {
@@ -236,6 +281,7 @@
           onError: (code, text, c) => this.dropConn(c),
         };
       });
+      this.reschedule();
     }
 
     setEnabled(on) { this.enabled = !!on; this.bind(); this.node.net.emit('config', { dev: this.node }); }
@@ -281,7 +327,7 @@
         }
         case 'LIST':
           if (!this.auth(d.user, d.pass)) { reply({ iot: 'DENIED', text: 'Неверное имя пользователя или пароль' }); return; }
-          reply({ iot: 'LIST-OK', things: [...this.things.values()].map((t) => ({ name: t.name, kind: t.kind, model: t.model, state: Object.assign({}, t.state), ip: t.ip })), rules: JSON.parse(JSON.stringify(this.rules)) });
+          reply({ iot: 'LIST-OK', things: [...this.things.values()].map((t) => ({ name: t.name, kind: t.kind, model: t.model, state: Object.assign({}, t.state), ip: t.ip })), rules: JSON.parse(JSON.stringify(this.rules)), clock: clockOf(node).text });
           return;
         case 'SET': {
           if (!this.auth(d.user, d.pass)) { reply({ iot: 'DENIED', text: 'Неверное имя пользователя или пароль' }); return; }
@@ -315,29 +361,83 @@
       this.node.net.emit('config', { dev: this.node });
     }
 
-    /** Правила: если условие выполнено — привести устройства в нужное состояние (команды SET). */
+    /** Условие: true / false; null — устройство не зарегистрировано или у него нет такого свойства. */
+    condHolds(c, now) {
+      if (c.type === 'time') return timeHolds(c, now);
+      const t = this.things.get(c.thing);
+      if (!t) return null;
+      const meta = KINDS[t.kind] && KINDS[t.kind].props[c.prop];
+      const want = coerce(meta, c.value);
+      if (want === undefined || !(c.prop in t.state)) return null;
+      return OPS[c.op](t.state[c.prop], want);
+    }
+
+    /** Правила: если условия выполнены (все — «И», хотя бы одно — «ИЛИ») — привести устройства в нужное состояние (команды SET).
+     * Если несколько правил задают одно свойство, побеждает последнее в списке — иначе противоречащие правила переключали бы устройство бесконечно. */
     evaluate() {
+      const now = clockOf(this.node);
+      const want = new Map();
       for (const r of this.rules) {
         if (!r.enabled) continue;
-        const t = this.things.get(r.cond.thing);
-        if (!t) continue;
-        const meta = KINDS[t.kind] && KINDS[t.kind].props[r.cond.prop];
-        const want = coerce(meta, r.cond.value);
-        if (want === undefined || !(r.cond.prop in t.state)) continue;
-        if (!OPS[r.cond.op](t.state[r.cond.prop], want)) continue;
+        const res = condsOf(r).map((c) => this.condHolds(c, now));
+        if (!res.length || !(r.match === 'any' ? res.some((x) => x === true) : res.every((x) => x === true))) continue;
         for (const a of r.actions) {
           const x = this.things.get(a.thing);
           if (!x) continue;
           const am = KINDS[x.kind] && KINDS[x.kind].props[a.prop];
           const v = coerce(am, a.value);
-          if (v === undefined || !am.control || x.state[a.prop] === v) continue;
-          this.node.note('IoT-сервер: правило «' + r.name + '» → ' + a.thing + ': ' + propText(x.kind, a.prop, v), null, 'info');
-          x.conn.send({ iot: 'SET', prop: a.prop, value: v });
+          if (v === undefined || !am.control) continue;
+          want.set(a.thing + '\u0000' + a.prop, { x, r, prop: a.prop, v });
         }
       }
+      for (const w of want.values()) {
+        if (w.x.state[w.prop] === w.v) continue;
+        this.node.note('IoT-сервер: правило «' + w.r.name + '» (' + ruleText(w.r) + ') → ' + w.x.name + ': ' + propText(w.x.kind, w.prop, w.v), null, 'info');
+        w.x.conn.send({ iot: 'SET', prop: w.prop, value: w.v });
+      }
+      this.reschedule(now);
     }
 
-    serialize() { return { enabled: this.enabled, users: this.users.map((u) => Object.assign({}, u)), rules: JSON.parse(JSON.stringify(this.rules)) }; }
+    /** Расписание: один таймер на ближайшую границу интервала «время …–…» (без постоянного опроса). */
+    reschedule(now) {
+      if (this.sched) { this.sched.cancel(); this.sched = null; }
+      if (!this.enabled || !this.node.tcp) return;
+      const cur = ((now || clockOf(this.node)).abs % 86400000) / 60000;
+      let best = null;
+      for (const r of this.rules) {
+        if (!r.enabled) continue;
+        for (const c of condsOf(r)) {
+          if (c.type !== 'time') continue;
+          const marks = [hm(c.from), hm(c.to)];
+          if (c.days && c.days.length) marks.push(0);
+          for (const m of marks) {
+            let d = m - cur;
+            if (d <= 1e-9) d += 1440;
+            if (best == null || d < best) best = d;
+          }
+        }
+      }
+      if (best == null) return;
+      this.sched = this.node.timer(Math.ceil(best * 6000) + 1, () => { this.sched = null; this.evaluate(); });
+    }
+
+    /** Установить часы сервера (ЧЧ:ММ), дата не меняется. */
+    setClock(text) {
+      const m = hm(text);
+      if (m == null) throw new Error('Время укажите как ЧЧ:ММ');
+      const now = clockOf(this.node);
+      this.node.clockOffset = (this.node.clockOffset || 0) + (m - now.min) * 60000 - (now.abs % 60000);
+      this.evaluate();
+      this.node.net.emit('config', { dev: this.node });
+    }
+
+    clock() { return clockOf(this.node).text; }
+
+    serialize() {
+      const o = { enabled: this.enabled, users: this.users.map((u) => Object.assign({}, u)), rules: JSON.parse(JSON.stringify(this.rules)) };
+      if (this.node.clockOffset) o.clock = clockOf(this.node).abs; // показания часов на момент сохранения
+      return o;
+    }
 
     load(c) {
       if (!c) return;
@@ -345,10 +445,12 @@
       this.users = Array.isArray(c.users) ? c.users.filter((u) => u && u.user).map((u) => ({ user: String(u.user), pass: String(u.pass || '') })) : [];
       this.rules = [];
       for (const r of c.rules || []) { try { this.rules.push(normRule(r)); } catch (e) { /* пропускаем испорченное правило */ } }
+      if (Number.isFinite(c.clock)) this.node.clockOffset = c.clock - (Date.UTC(1993, 2, 1) + this.node.net.time * 10);
       this.bind();
     }
   }
   NS.IotService = IotService;
+  NS.iotRules = { normRule, ruleText, condText, clockOf, timeHolds, DAYS };
 
   IpNode.hooks.bind.push(function () {
     if (this.type === 'server' && !this.iotd) this.iotd = new IotService(this);
@@ -447,6 +549,20 @@
     if (!d.program) d.program = { code: DEFAULT_CODE };
     return d.program;
   }
+  /** Программа платы: код, язык (js | python | blocks) и блоки визуального редактора; язык и блоки — только если заданы. */
+  function saveProgram(p) {
+    const o = { code: p.code };
+    if (p.lang && p.lang !== 'js') o.lang = p.lang;
+    if (p.blocks) o.blocks = JSON.parse(JSON.stringify(p.blocks));
+    return o;
+  }
+  function loadProgram(c) {
+    if (c && c.lang === 'js') delete c.lang;
+    const p = { code: c && typeof c.code === 'string' ? c.code : DEFAULT_CODE };
+    if (c && (c.lang === 'python' || c.lang === 'blocks')) p.lang = c.lang;
+    if (c && c.blocks && typeof c.blocks === 'object') p.blocks = c.blocks;
+    return p;
+  }
   const DEFAULT_CODE = '// Мигание светодиодом на пине D0\n// Подключите «LED» IoT-кабелем к D0 и нажмите «Запустить»\n\nfunction setup() {\n  pinMode(0, OUTPUT);\n  Serial.println("Старт");\n}\n\nfunction loop() {\n  digitalWrite(0, HIGH);\n  delay(500);\n  digitalWrite(0, LOW);\n  delay(500);\n}\n';
 
   class Mcu extends NS.Device {
@@ -456,8 +572,8 @@
       this.pinOut = {};
     }
     reset() { super.reset(); this.pinOut = {}; this.net.emit('program-stop', { dev: this }); }
-    serializeConfig() { return { program: { code: this.program.code } }; }
-    loadConfig(c) { this.program = { code: c && c.program && typeof c.program.code === 'string' ? c.program.code : DEFAULT_CODE }; }
+    serializeConfig() { return { program: saveProgram(this.program) }; }
+    loadConfig(c) { this.program = loadProgram(c && c.program); }
   }
   Mcu.namePrefix = 'MCU';
   Mcu.title = 'Микроконтроллер';
@@ -467,8 +583,8 @@
   NS.deviceExt.push({
     key: 'program',
     applies: (d) => d.type === 'sbc',
-    save: (d) => ({ code: programOf(d).code }),
-    load(d, c) { d.program = { code: c && typeof c.code === 'string' ? c.code : DEFAULT_CODE }; },
+    save: (d) => saveProgram(programOf(d)),
+    load(d, c) { d.program = loadProgram(c); },
   });
   IpNode.hooks.runtime.push(function () { if (this.type === 'sbc') { programOf(this); this.pinOut = {}; } });
 
