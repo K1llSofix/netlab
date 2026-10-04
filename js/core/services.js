@@ -257,18 +257,20 @@
 
     bind() {
       if (!this.node.tcp) return;
-      if (!this.enabled) { this.node.tcp.unlisten(80); return; }
-      this.node.tcp.listen(80, (conn) => {
+      if (!this.enabled) { this.node.tcp.unlisten(80); this.node.tcp.unlisten(443); return; }
+      const serve = (conn) => {
         conn.h.onData = (d) => {
-          if (!d || d.http !== 'GET') return;
-          let path = String(d.path || '/').replace(/^\/+/, '');
+          if (!d || (d.http !== 'GET' && d.http !== 'POST')) return;
+          let path = String(d.path || '/').split('?')[0].replace(/^\/+/, '');
           if (!path) path = 'index.html';
           const body = this.files.get(path.toLowerCase());
           if (body != null) conn.send({ http: 'RESP', status: 200, reason: 'OK', path, body });
           else conn.send({ http: 'RESP', status: 404, reason: 'Not Found', path, body: '<html><h2>404 — страница не найдена</h2><p>На сервере нет файла «' + path.replace(/[<>&"]/g, '') + '».</html>' });
           conn.close();
         };
-      });
+      };
+      this.node.tcp.listen(80, serve);
+      this.node.tcp.listen(443, NS.tls ? NS.tls.server(this.node, serve) : serve); // HTTPS: рукопожатие TLS и сертификат сервера
     }
 
     setFile(name, body) {

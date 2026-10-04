@@ -18,7 +18,7 @@
 
   function pointKey(dev, f) {
     if (f.kind === 'svi') return dev.id + '|svi|' + f.vlan;
-    return dev.id + '|' + f.port + '|' + (f.kind === 'sub' ? f.vlan : 'u');
+    return dev.id + '|' + f.port + '|' + (f.kind === 'sub' ? (f.dlci != null ? 'fr' + f.dlci : f.vlan) : 'u');
   }
   function isPassive(cfg, f) { return !!cfg && (cfg.passive || []).some((n) => n.toLowerCase() === f.name.toLowerCase()); }
 

@@ -31,7 +31,7 @@
 
   function pointKey(dev, f) {
     if (f.kind === 'svi') return dev.id + '|svi|' + f.vlan;
-    return dev.id + '|' + f.port + '|' + (f.kind === 'sub' ? f.vlan : 'u');
+    return dev.id + '|' + f.port + '|' + (f.kind === 'sub' ? (f.dlci != null ? 'fr' + f.dlci : f.vlan) : 'u');
   }
 
   /** Соседство на канале: интерфейсы, видящие друг друга на 2-м уровне и включённые в одном «домене». */
@@ -614,7 +614,6 @@
         s.mode = 'ospf6';
         return true;
       }
-      if (C.kw(a[2], 'eigrp', 1)) { io.out('% EIGRP для IPv6 в NetLab не поддерживается — используйте OSPFv3 или RIPng.'); return true; }
       C.invalid(io, a[2]);
       return true;
     }
@@ -829,7 +828,7 @@
 
   function showRoute6(dev, filter, io) {
     const all = dev.routingTable6();
-    const rows = all.filter((r) => !filter || ({ rip: 'R', ospf: 'O', static: 'S', connected: 'C', local: 'L' }[filter]) === r.type || (filter === 'connected' && r.type === 'L'));
+    const rows = all.filter((r) => !filter || ({ rip: 'R', ospf: 'O', eigrp: 'D', static: 'S', connected: 'C', local: 'L' }[filter]) === r.type || (filter === 'connected' && r.type === 'L'));
     CODES6.forEach((l) => io.out(l.replace('%N', String(all.length))));
     for (const r of rows) {
       const code = (r.type + (r.sub || '')).padEnd(3);
@@ -842,7 +841,7 @@
     if (!C.kw(a[0], 'ipv6', 4)) return false;
     const w = a[1];
     if (C.kw(w, 'route', 1)) {
-      const f = ['rip', 'ospf', 'static', 'connected', 'local'].find((x) => C.kw(a[2], x, 1));
+      const f = ['rip', 'ospf', 'eigrp', 'static', 'connected', 'local'].find((x) => C.kw(a[2], x, 1));
       if (a[2] && !f) return false;
       showRoute6(dev, f, io);
       return true;
@@ -1025,5 +1024,5 @@
   });
   H.help.push('  ipconfig /renew6 | /release6                             адрес IPv6 по DHCPv6');
 
-  NS.routing6 = { computeRipng, computeOspf6, ospf6Rid, compute6 };
+  NS.routing6 = { computeRipng, computeOspf6, ospf6Rid, compute6, adjacencies6, on, globals, key6, redist6, r6, routing6 };
 })(globalThis.NetLab = globalThis.NetLab || {});

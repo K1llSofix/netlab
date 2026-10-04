@@ -291,6 +291,11 @@
     receive(i, frame) {
       const port = this.ports[i];
       if (port.routed) { super.receive(i, frame); return; }
+      if (port.stpPhase) {
+        const left = Math.max(1, Math.ceil(((port.stpPhase === 'listening' ? 1500 : this.stpMode === 'rapid-pvst' ? 300 : 3000) - (this.net.time - (port.stpSince || 0))) / 100));
+        this.drop(frame, 'Порт ' + port.name + ' в состоянии STP ' + port.stpPhase + ' — начнёт пересылать кадры примерно через ' + left + ' с');
+        return;
+      }
       if (port.stp === 'blocking') {
         this.drop(frame, 'Порт ' + port.name + ' заблокирован STP (защита от петли)');
         return;

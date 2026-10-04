@@ -378,9 +378,15 @@
         const ts = (c.sets[entry.ts] || {}).esp || [];
         const theirTs = d.transforms || [];
         if (!ts.length || ts.join(' ') !== theirTs.join(' ')) { refuse('не совпадает transform-set (' + (ts.join(' ') || 'нет') + ' / ' + (theirTs.join(' ') || 'нет') + ')', 2); return; }
-        const acl = this.acls.get(entry.acl);
+        // ACL crypto map: у IOS — список доступа маршрутизатора, у ASA — access-list ASA (с объектами)
+        const asaAcl = this.type === 'asa' && NS.asa && NS.asa.aclCheck;
+        const acl = asaAcl ? (this.asa.acls[entry.acl] ? entry.acl : null) : this.acls.get(entry.acl);
+        const aclOk = (m) => {
+          if (asaAcl) { const r = NS.asa.aclCheck(this, entry.acl, m); return !!(r && r.permit && !r.implicit && !r.none); }
+          return acl.check(Object.assign({}, m, { proto: 'IP' })).permit || acl.check(m).permit;
+        };
         const mirror = d.proxy ? { src: d.proxy.dst, dst: d.proxy.src, proto: 'ICMP', payload: {} } : null;
-        if (!acl || (mirror && !acl.check(Object.assign({}, mirror, { proto: 'IP' })).permit && !acl.check(mirror).permit)) {
+        if (!acl || (mirror && !aclOk(mirror))) {
           refuse('ACL ' + (entry.acl || '?') + ' в crypto map не зеркален ACL пира (match address)', 2);
           return;
         }
@@ -432,14 +438,14 @@
     const sa = this.ike && this.ike.bySpi.get(esp.spi);
     if (!sa) { if (frame) this.drop(frame, 'IPsec: неизвестный SPI 0x' + (esp.spi >>> 0).toString(16) + ' — нет защищённого канала'); return; }
     sa.decaps++;
-    const inner = esp.inner;
+    const inner = Object.assign({}, esp.inner, { viaVpn: true });
     this.note('IPsec: расшифрован пакет ' + U.ipStr(inner.src) + ' → ' + U.ipStr(inner.dst) + ' от ' + U.ipStr(pkt.src), frame, 'accept');
     if (sa.client) this.onIp(f, inner, frame);
     else this.onIp(f, inner, frame);
   };
 
   IpNode.hooks.bind.push(function () {
-    if (this.type !== 'router') return;
+    if (this.type !== 'router' && this.type !== 'asa') return;
     this.udp.set(IKE_PORT, (pkt, f, frame) => {
       if (!this.crypto) { this.portClosed(pkt, f, frame); return; }
       this.ikeRespond(pkt, f);
@@ -594,7 +600,7 @@
 
   NS.deviceExt.push({
     key: 'crypto',
-    applies: (d) => d.type === 'router',
+    applies: (d) => d.type === 'router' || d.type === 'asa',
     save(d) {
       const c = d.crypto;
       const pools = d.pools && Object.keys(d.pools).length ? Object.fromEntries(Object.entries(d.pools).map(([k, v]) => [k, { start: U.ipStr(v.start), end: U.ipStr(v.end) }])) : null;

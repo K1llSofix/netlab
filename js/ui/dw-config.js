@@ -89,6 +89,8 @@
     box.appendChild(DW.form(
       ...displayName(app, dev),
       lbl('Интерфейс'), h('div', { class: 'mono' }, f.name),
+      ...(NS.linux && NS.linux.canLinux(dev) ? [lbl('Операционная система'), h('div', null, DW.select([['windows', 'Windows (командная строка cmd)'], ['linux', 'Linux (bash: ip, iptables, tcpdump…)']], dev.os === 'linux' ? 'linux' : 'windows',
+        (v) => DW.apply(app, () => NS.linux.setOs(app.net.getDevice(dev.id), v), e), { style: { width: 'auto' } }))] : []),
       lbl('Шлюз и DNS (IPv4)'), DW.radio('gw-' + dev.id, [['dhcp', 'DHCP'], ['static', 'Статически']], mode, (v) => {
         if (v === 'dhcp') DW.apply(app, () => app.net.getDevice(dev.id).setDhcp(), e);
         else DW.apply(app, () => { const x = app.net.getDevice(dev.id); x.setStatic(null, null, null, null); }, e);

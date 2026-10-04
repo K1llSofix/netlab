@@ -581,7 +581,8 @@
     dev.iosLog('SYS', 5, 'CONFIG_I', 'Configured from ' + (s.via === 'vty' ? 'vty0 (' + (s.remoteIp != null ? U.ipStr(s.remoteIp) : '') + ')' : 'console by console'));
   };
 
-  X.global.push((t) => /^(logging|ntp)$/i.test(t[0] || '') || (/^ip$/i.test(t[0] || '') && /^ftp$/i.test(t[1] || '')));
+  // logging synchronous в режиме line — команда линии, а не глобальная logging
+  X.global.push((t, s) => (/^(logging|ntp)$/i.test(t[0] || '') && !(s && s.mode === 'line' && /^logging$/i.test(t[0]))) || (/^ip$/i.test(t[0] || '') && /^ftp$/i.test(t[1] || '')));
 
   X.config.push((dev, s, a, neg, io, C) => {
     if (!dev.ios || dev.type === 'wrouter' || dev.type === 'homegw') return false;

@@ -1,4 +1,4 @@
-/* NetLab — межсетевой экран Cisco ASA 5506-X.
+/* NetLab — межсетевые экраны Cisco ASA 5506-X и ASA 5505 (8 портов встроенного коммутатора, interface Vlan N с nameif).
  * Интерфейсы с nameif и security-level; трафик с более высокого уровня на более низкий разрешён, обратно — только
  * по access-group; ответы проходят по таблице соединений (conn). ICMP проверяется с состоянием, только если в
  * policy-map global_policy есть inspect icmp. Object NAT (dynamic interface — PAT, static), dhcpd, свой CLI ASA. */
@@ -18,7 +18,26 @@
       .concat([{ name: 'Management1/1', media: 'copper', speed: 1000 }, { name: 'Console', media: 'console', speed: 0 }]),
     slots: [], attrs: { MTBF: 300000, cost: 8000, 'power source': 0, 'rack units': 1, wattage: 60 },
   };
+  NS.models.MODELS.ASA5505 = {
+    type: 'asa', title: 'Межсетевой экран Cisco ASA 5505', ios: true,
+    ports: [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({ name: 'Ethernet0/' + i, media: 'copper', speed: 100, mdix: true, module: 'ASA5505' }))
+      .concat([{ name: 'Console', media: 'console', speed: 0 }]),
+    slots: [], attrs: { MTBF: 300000, cost: 4000, 'power source': 0, 'rack units': 1, wattage: 20 },
+  };
   NS.models.DEFAULT_MODEL.asa = 'ASA5506';
+
+  const HW = {
+    ASA5506: { hw: 'ASA5506, 4096 MB RAM, CPU Atom C2000 series 1250 MHz, 1 CPU (4 cores)', ver: '9.8(1)' },
+    ASA5505: { hw: 'ASA5505, 512 MB RAM, CPU Geode 500 MHz', ver: '9.2(4)' },
+  };
+  const hwOf = (dev) => HW[dev.model] || HW.ASA5506;
+  /** Порт встроенного коммутатора ASA 5505 (2-й уровень, в VLAN). */
+  const isSw = (p) => !!p && p.module === 'ASA5505';
+  const hasSw = (dev) => dev.ports.some(isSw);
+
+  /** Расширения CLI ASA: config(dev, s, t, neg, io) → true, modes[имя] = { prompt, run(dev, s, t, io) }, show(dev, s, a, io) → true, running(dev) → строки. */
+  const AX = { config: [], modes: {}, show: [], running: [] };
+  NS.asaExt = AX;
 
   const DEFAULT_INSPECT = ['dns', 'ftp', 'rsh', 'rtsp', 'esmtp', 'sqlnet', 'skinny', 'sunrpc', 'xdmcp', 'sip', 'netbios', 'tftp'];
 
@@ -37,6 +56,20 @@
         const p = this.ports[f.port];
         if (p) p.adminUp = false;
       }
+      if (hasSw(this)) this.factoryDefault5505();
+    }
+
+    /** Заводская конфигурация ASA 5505: Ethernet0/0 — VLAN 2 (outside, адрес по DHCP), остальные — VLAN 1 (inside, 192.168.1.1), DHCP-сервер внутри. */
+    factoryDefault5505() {
+      this.ports[0].eswVlan = 2;
+      const v1 = this.addIface(-1, 'Vlan1', 1, 'svi');
+      Object.assign(v1, { adminUp: true, nameif: 'inside', secLevel: 100 });
+      this.setIfaceIp(v1, U.parseIp('192.168.1.1'), U.parseMask('255.255.255.0'));
+      const v2 = this.addIface(-1, 'Vlan2', 2, 'svi');
+      Object.assign(v2, { adminUp: true, nameif: 'outside', secLevel: 0, dhcp: true, setroute: true });
+      this.asa.dhcpd.ranges.inside = { start: U.parseIp('192.168.1.5'), end: U.parseIp('192.168.1.36') };
+      this.asa.dhcpd.enabled = ['inside'];
+      syncDhcp(this);
     }
 
     saveNvram() {
@@ -200,7 +233,8 @@
       back.bytes += 64;
       why = 'ASA: ответ в соединении ' + back.proto + ' ' + ip(back.src) + ' → ' + ip(back.dst);
     } else {
-      const grp = dev.asa.groups[f.nameif.toLowerCase()];
+      const vpnIn = !!p.viaVpn && dev.asa.permitVpn !== false; // sysopt connection permit-vpn: расшифрованный трафик без ACL
+      const grp = vpnIn ? null : dev.asa.groups[f.nameif.toLowerCase()];
       const icmpType = p.proto === 'ICMP' ? ' (type ' + (p.payload && p.payload.type === 'echo-reply' ? 0 : 8) + ', code 0)' : '';
       if (grp) {
         const res = aclCheck(dev, grp, p);
@@ -210,6 +244,8 @@
           return true;
         }
         why = 'ASA: разрешено access-list ' + grp;
+      } else if (vpnIn) {
+        why = 'ASA: трафик из туннеля IPsec (sysopt connection permit-vpn) — ACL не проверяется';
       } else if (secOf(f) > secOf(out) || (secOf(f) === secOf(out) && dev.asa.sameSec)) {
         why = 'ASA: с уровня безопасности ' + secOf(f) + ' (' + f.nameif + ') на ' + secOf(out) + ' (' + out.nameif + ') — разрешено';
       } else {
@@ -237,7 +273,9 @@
     let o = p;
     let natNote = '';
     if (!unnat) {
-      const t = translateOut(dev, p, f, out);
+      const ex = AX.natExempt && AX.natExempt(dev, f, out, p);
+      const t = ex ? { pkt: p, x: null } : translateOut(dev, p, f, out);
+      if (ex) natNote = ' · без NAT (twice NAT ' + ex + ')';
       if (t.fail) { dev.drop(frame, 'ASA NAT: ' + t.fail); return true; }
       if (t.x) natNote = ' · NAT ' + ip(p.src) + ' → ' + ip(t.pkt.src) + (t.x.flags === 'ri' ? ' (PAT)' : '');
       o = t.pkt;
@@ -343,7 +381,8 @@
   function prompt(dev, s) {
     if (s.pending) return s.pending.prompt;
     const n = dev.ios.hostname;
-    return n + ({ user: '>', exec: '#', config: '(config)#', if: '(config-if)#', obj: '(config-network-object)#', pmap: '(config-pmap)#', pmapc: '(config-pmap-c)#', cmap: '(config-cmap)#' }[s.mode] || '#');
+    if (AX.modes[s.mode]) return n + AX.modes[s.mode].prompt;
+    return n + ({ user: '>', exec: '#', config: '(config)#', if: '(config-if)#', swport: '(config-if)#', obj: '(config-network-object)#', pmap: '(config-pmap)#', pmapc: '(config-pmap-c)#', cmap: '(config-cmap)#' }[s.mode] || '#');
   }
 
   /** Имя интерфейса: g1/1, gi1/2, management1/1, m1/1. */
@@ -373,10 +412,17 @@
 
   function runningConfig(dev) {
     const a = dev.asa;
-    const L = [': Saved', ':', ': Hardware:   ASA5506, 4096 MB RAM, CPU Atom C2000 series 1250 MHz, 1 CPU (4 cores)', ':', 'ASA Version 9.8(1)', '!', 'hostname ' + dev.ios.hostname];
+    const L = [': Saved', ':', ': Hardware:   ' + hwOf(dev).hw, ':', 'ASA Version ' + hwOf(dev).ver, '!', 'hostname ' + dev.ios.hostname];
     if (dev.ios.enablePassword || dev.ios.enableSecret) L.push('enable password ' + U.secretHash(dev.ios.enablePassword || dev.ios.enableSecret).slice(3, 19) + ' encrypted');
     L.push('names', '!');
-    for (const f of dev.ifaces.filter((x) => x.kind === 'phys')) {
+    for (const p of dev.ports) {
+      if (!isSw(p)) continue;
+      L.push('interface ' + p.name);
+      if ((p.eswVlan || 1) !== 1) L.push(' switchport access vlan ' + p.eswVlan);
+      if (!p.adminUp) L.push(' shutdown');
+      L.push('!');
+    }
+    for (const f of dev.ifaces.filter((x) => x.kind === 'phys' || x.kind === 'svi')) {
       L.push('interface ' + f.name);
       const p = dev.ports[f.port];
       if (!f.adminUp || (p && !p.adminUp)) L.push(' shutdown');
@@ -416,6 +462,7 @@
     for (const x of a.inspect) L.push('  inspect ' + x);
     L.push('!', 'service-policy global_policy global');
     for (const u of dev.ios.users) L.push('username ' + u.name + ' password ' + (u.secret ? u.pass.slice(3, 19) : U.secretHash(u.pass).slice(3, 19)) + ' encrypted' + (u.priv > 1 ? ' privilege ' + u.priv : ''));
+    for (const fn of AX.running) L.push(...fn(dev));
     L.push(': end');
     return L;
   }
@@ -439,6 +486,7 @@
   }
 
   function show(dev, s, a, io) {
+    for (const fn of AX.show) if (fn(dev, s, a, io)) return;
     const w = a[0];
     if (kw(w, 'running-config', 3)) {
       const L = runningConfig(dev);
@@ -448,12 +496,12 @@
     }
     if (kw(w, 'startup-config', 3)) { if (!dev.nvram) { io.out('No Configuration'); return; } dev.nvram.text.forEach((l) => io.out(l)); return; }
     if (kw(w, 'version', 2)) {
-      io.out('Cisco Adaptive Security Appliance Software Version 9.8(1)');
-      io.out('Firepower Extensible Operating System Version 2.2(1.47)');
+      io.out('Cisco Adaptive Security Appliance Software Version ' + hwOf(dev).ver);
+      if (dev.model !== 'ASA5505') io.out('Firepower Extensible Operating System Version 2.2(1.47)');
       io.out('');
       io.out(dev.ios.hostname + ' up ' + Math.floor(dev.net.time / 6000) + ' mins ' + Math.floor(dev.net.time / 100) % 60 + ' secs');
       io.out('');
-      io.out('Hardware:   ASA5506, 4096 MB RAM, CPU Atom C2000 series 1250 MHz, 1 CPU (4 cores)');
+      io.out('Hardware:   ' + hwOf(dev).hw);
       dev.ifaces.filter((f) => f.kind === 'phys').forEach((f, i) => io.out(' ' + i + ': Int: Internal-Data' + ' : address is ' + U.ciscoMac(dev.ifaceMac(f)) + ', irq 255   ' + f.name));
       io.out('');
       io.out('Licensed features for this platform:');
@@ -464,10 +512,27 @@
     }
     if (kw(w, 'interface', 2) && kw(a[1], 'ip', 1) && kw(a[2], 'brief', 1)) {
       io.out('Interface                  IP-Address      OK? Method Status                Protocol');
-      for (const f of dev.ifaces.filter((x) => x.kind === 'phys')) {
+      dev.ports.forEach((p, j) => {
+        if (!isSw(p)) return;
+        const up = dev.net.isPortOperational(dev, j);
+        io.out(pad(p.name, 27) + pad('unassigned', 16) + pad('YES', 4) + pad('unset', 7) + pad(!p.adminUp ? 'administratively down' : up ? 'up' : 'down', 22) + (up ? 'up' : 'down'));
+      });
+      for (const f of dev.ifaces.filter((x) => x.kind === 'phys' || x.kind === 'svi')) {
         const p = dev.ports[f.port];
         const admin = f.adminUp && (!p || p.adminUp);
         io.out(pad(f.name, 27) + pad(f.ip != null ? ip(f.ip) : 'unassigned', 16) + pad('YES', 4) + pad(f.dhcp ? 'DHCP' : f.ip != null ? 'manual' : 'unset', 7) + pad(!admin ? 'administratively down' : dev.ifaceUp(f) ? 'up' : 'down', 22) + (dev.ifaceUp(f) ? 'up' : 'down'));
+      }
+      return;
+    }
+    if (kw(w, 'switch', 2) && kw(a[1], 'vlan', 1) && hasSw(dev)) {
+      const vl = new Map();
+      for (const f of dev.ifaces) if (f.kind === 'svi') vl.set(f.vlan, []);
+      for (const p of dev.ports) if (isSw(p)) { const v = p.eswVlan || 1; if (!vl.has(v)) vl.set(v, []); vl.get(v).push(p.name.replace(/^Ethernet/, 'Et')); }
+      io.out('VLAN Name                             Status    Ports');
+      io.out('---- -------------------------------- --------- -----------------------------');
+      for (const [v, ps] of [...vl.entries()].sort((x, y) => x[0] - y[0])) {
+        const f = dev.ifaces.find((x) => x.kind === 'svi' && x.vlan === v);
+        io.out(pad(String(v), 5) + pad(f ? f.nameif || '-' : '-', 33) + pad(f && dev.ifaceUp(f) ? 'up' : 'down', 10) + ps.join(', '));
       }
       return;
     }
@@ -577,6 +642,7 @@
     const a = neg ? t.slice(1) : t;
     const w = a[0];
     const A = dev.asa;
+    for (const fn of AX.config) if (fn(dev, s, t, neg, io)) return;
     if (kw(w, 'hostname', 3)) { if (!a[1]) { C.incomplete(io); return; } mutate(io, () => dev.setHostname(a[1])); return; }
     if (kw(w, 'enable', 2) && kw(a[1], 'password', 1)) { mutate(io, () => { dev.setEnableSecret(null); dev.setEnablePassword(neg ? null : a[2] || null); }); return; }
     if (kw(w, 'username', 3)) {
@@ -586,6 +652,27 @@
       const pr = a.findIndex((x) => kw(x, 'privilege', 2));
       mutate(io, () => dev.setUser(a[1], a[pi + 1], true, pr > 0 ? Number(a[pr + 1]) || 1 : 2));
       return;
+    }
+    if (kw(w, 'interface', 3) && hasSw(dev)) {
+      const nm = a.slice(1).join('');
+      const vm = /^vl(?:a(?:n)?)?(\d+)$/i.exec(nm);
+      if (vm) {
+        const v = Number(vm[1]);
+        if (!(v >= 1 && v <= 4090)) { C.incomplete(io); return; }
+        let f = dev.ifaceByName('Vlan' + v);
+        if (neg) { if (f) mutate(io, () => { delete dev.asa.groups[(f.nameif || '').toLowerCase()]; dev.removeIface(f); }); return; }
+        if (!f) {
+          if (dev.ifaces.filter((x) => x.kind === 'svi').length >= 20) { io.out('ERROR: This license does not allow configuring more than 20 VLANs'); return; }
+          mutate(io, () => { f = dev.addIface(-1, 'Vlan' + v, v, 'svi'); f.adminUp = true; if (dev.sortIfaces) dev.sortIfaces(); dev.net.markRouting(); });
+        }
+        s.mode = 'if';
+        s.ifs = [f];
+        return;
+      }
+      const t2 = nm.toLowerCase();
+      const pm = /^([a-z]+)([\d/]+)$/.exec(t2);
+      const j = pm ? dev.ports.findIndex((p) => isSw(p) && p.name.toLowerCase().startsWith(pm[1]) && p.name.replace(/^[A-Za-z]+/, '') === pm[2]) : -1;
+      if (j >= 0) { s.mode = 'swport'; s.port = j; return; }
     }
     if (kw(w, 'interface', 3)) {
       const f = portByName(dev, a.slice(1).join(''));
@@ -702,6 +789,35 @@
     C.invalid(io, w);
   }
 
+  /** interface Ethernet0/N на ASA 5505 — порт встроенного коммутатора. */
+  function swPortCmd(dev, s, t, io) {
+    const neg = kw(t[0], 'no', 2);
+    const a = neg ? t.slice(1) : t;
+    const w = a[0];
+    const p = dev.ports[s.port];
+    if (kw(w, 'switchport', 2)) {
+      if (kw(a[1], 'access', 1) && kw(a[2], 'vlan', 1)) {
+        const v = neg ? 1 : Number(a[3]);
+        if (!(Number.isInteger(v) && v >= 1 && v <= 4090)) { C.incomplete(io); return; }
+        mutate(io, () => { p.eswVlan = v; dev.eswTable = null; });
+        dev.net.refreshTopology();
+        dev.net.markRouting();
+        return;
+      }
+      if (kw(a[1], 'mode', 1)) { io.out('ERROR: в NetLab порты ASA 5505 работают только в режиме access'); return; }
+      C.incomplete(io);
+      return;
+    }
+    if (kw(w, 'shutdown', 2)) { mutate(io, () => dev.setPortAdmin(s.port, neg)); return; }
+    if (kw(w, 'nameif', 2) || kw(w, 'security-level', 2) || kw(w, 'ip', 2)) {
+      io.out('ERROR: ' + p.name + ' — порт встроенного коммутатора. nameif, security-level и адрес задаются на interface vlan N');
+      return;
+    }
+    if (kw(w, 'description', 1) || kw(w, 'speed', 2) || kw(w, 'duplex', 2)) return;
+    if (kw(w, 'interface', 3) || kw(w, 'route', 2) || kw(w, 'object', 2) || kw(w, 'access-list', 2) || kw(w, 'access-group', 8) || kw(w, 'dhcpd', 5) || kw(w, 'hostname', 3)) { s.mode = 'config'; configCmd(dev, s, t, io); return; }
+    C.invalid(io, w);
+  }
+
   function ifCmd(dev, s, t, io) {
     const neg = kw(t[0], 'no', 2);
     const a = neg ? t.slice(1) : t;
@@ -811,8 +927,13 @@
     // ASA позволяет show и ping прямо в режиме конфигурации
     if (kw(t[0], 'show', 2) || kw(t[0], 'ping', 1) || kw(t[0], 'write', 2) || kw(t[0], 'copy', 2) || kw(t[0], 'clear', 2)) return execCmd(dev, Object.assign({}, s, { mode: 'exec' }), t, io);
     if (kw(t[0], 'do', 2)) return execCmd(dev, Object.assign({}, s, { mode: 'exec' }), t.slice(1), io);
+    if (AX.modes[s.mode]) {
+      if (AX.modes[s.mode].run(dev, s, t, io) === false) { s.mode = 'config'; configCmd(dev, s, t, io); }
+      return null;
+    }
     switch (s.mode) {
       case 'if': ifCmd(dev, s, t, io); break;
+      case 'swport': swPortCmd(dev, s, t, io); break;
       case 'obj': objCmd(dev, s, t, io); break;
       case 'pmap': case 'pmapc': pmapCmd(dev, s, t, io); break;
       case 'cmap': if (!kw(t[0], 'match', 1)) { s.mode = 'config'; configCmd(dev, s, t, io); } break;
@@ -823,10 +944,11 @@
 
   const TREE = {
     user: ['enable', 'exit', 'ping WORD', 'show version', 'show interface ip brief', 'show route'],
-    exec: ['configure terminal', 'show running-config', 'show interface ip brief', 'show nameif', 'show route', 'show xlate', 'show conn', 'show access-list', 'show dhcpd binding', 'show service-policy', 'show logging', 'write memory', 'copy running-config startup-config', 'clear xlate', 'clear conn', 'ping WORD', 'disable', 'exit'],
+    exec: ['configure terminal', 'show running-config', 'show interface ip brief', 'show nameif', 'show route', 'show xlate', 'show conn', 'show access-list', 'show dhcpd binding', 'show service-policy', 'show switch vlan', 'show logging', 'write memory', 'copy running-config startup-config', 'clear xlate', 'clear conn', 'ping WORD', 'disable', 'exit'],
     config: ['hostname WORD', 'interface WORD', 'route WORD A.B.C.D A.B.C.D A.B.C.D', 'object network WORD', 'access-list WORD extended permit icmp any any', 'access-group WORD in interface WORD',
       'policy-map global_policy', 'dhcpd address A.B.C.D-A.B.C.D WORD', 'dhcpd dns A.B.C.D', 'dhcpd enable WORD', 'same-security-traffic permit inter-interface', 'telnet A.B.C.D A.B.C.D WORD', 'enable password WORD', 'username WORD password WORD', 'end', 'exit'],
     if: ['nameif WORD', 'security-level WORD', 'ip address A.B.C.D A.B.C.D', 'ip address dhcp setroute', 'no shutdown', 'shutdown', 'exit'],
+    swport: ['switchport access vlan WORD', 'no shutdown', 'shutdown', 'exit'],
     obj: ['host A.B.C.D', 'subnet A.B.C.D A.B.C.D', 'nat (inside,outside) dynamic interface', 'nat (inside,outside) static A.B.C.D', 'exit'],
     pmap: ['class inspection_default', 'exit'],
     pmapc: ['inspect icmp', 'inspect http', 'inspect dns', 'no inspect icmp', 'exit'],

@@ -375,10 +375,11 @@
   DW.simpleConfig = simpleConfig;
 
   DW.configBuilders.cloud = simpleConfig({
-    items: [{ group: 'ТЕЛЕФОНИЯ' }, { id: 'numbers', label: 'Номера портов' }, { group: 'ПРОВАЙДЕР' }, { id: 'isp', label: 'DSL и кабель' }],
+    items: [{ group: 'ТЕЛЕФОНИЯ' }, { id: 'numbers', label: 'Номера портов' }, { group: 'ПРОВАЙДЕР' }, { id: 'isp', label: 'DSL и кабель' }, { group: 'FRAME RELAY' }, { id: 'fr', label: 'DLCI и PVC' }],
     globalHint: () => 'Облако моделирует телефонную сеть (PSTN): компьютер с модемом PT-HOST-NM-1AM подключается телефонным кабелем к порту Modem и звонит на номер другого порта программой Dial-up.',
     render(sec, app, d, box) {
       const e = err();
+      if (sec === 'fr' && DW.frCloudPage) return DW.frCloudPage(app, d, box);
       if (sec === 'isp') {
         const peer = (n) => DW.peerText(app.net, d, d.portIndex(n));
         box.append(DW.section('Сеть провайдера'), DW.form(lbl('Ethernet'), h('div', null, peer('Ethernet')), lbl('DSL'), h('div', null, peer('DSL')), lbl('Coaxial'), h('div', null, peer('Coaxial'))),

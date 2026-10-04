@@ -241,8 +241,8 @@ test('Программирование на Python и в блоках: пере�
   assert.deepEqual(logs, ['n=3 2 1 3 1 true']);
   assert.equal(writes.filter(([p, v]) => p === 'D0' && v === 1023).length, 3);
   let err = '';
-  await new Promise((resolve) => RT.run('class A:\n    pass\n', { read: () => 0, write() {}, log() {}, error: (t) => { err = t; }, done: resolve }, 'python'));
-  assert.match(err, /классы Python здесь не поддерживаются/);
+  await new Promise((resolve) => RT.run('class A(Unknown):\n    pass\n', { read: () => 0, write() {}, log() {}, error: (t) => { err = t; }, done: resolve }, 'python'));
+  assert.match(err, /базовый класс «Unknown» не найден/);
   // блоки
   const code = RT.blocksToJs({
     setup: [{ t: 'pinMode', pin: 'D0', mode: 'OUTPUT' }],

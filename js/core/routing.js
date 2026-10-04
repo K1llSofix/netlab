@@ -17,11 +17,13 @@
 
   function pointKey(dev, f) {
     if (f.kind === 'svi') return dev.id + '|svi|' + f.vlan;
-    return dev.id + '|' + f.port + '|' + (f.kind === 'sub' ? f.vlan : 'u');
+    return dev.id + '|' + f.port + '|' + (f.kind === 'sub' ? (f.dlci != null ? 'fr' + f.dlci : f.vlan) : 'u');
   }
 
   /** Все точки 3-го уровня, до которых доходит кадр, отправленный с интерфейса f устройства dev. */
   function reach(net, dev, f) {
+    // Frame Relay: соседи — на других концах PVC через облако
+    if (NS.fr && NS.fr.reach) { const r = NS.fr.reach(net, dev, f); if (r) return r; }
     const seen = new Set();
     const points = new Set();
     const queue = [];

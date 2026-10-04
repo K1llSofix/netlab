@@ -66,7 +66,7 @@
   class Thing extends NS.Host {
     constructor(net, id, name, model) {
       super(net, id, name, model, 'iot');
-      this.thing = { kind: this.spec.thing || 'lamp', state: Object.assign({}, INIT[this.spec.thing || 'lamp']) };
+      this.thing = { kind: this.spec.thing || 'lamp', state: Object.assign({}, INIT[this.spec.thing || 'lamp'] || {}) };
       this.iot = { server: 'off', address: null, user: 'admin', pass: 'admin' };
       this.iotRt = { state: 'off', text: 'IoT-сервер не задан', conn: null, retry: null, server: null };
     }
@@ -591,6 +591,8 @@
   const IOT = {
     PORT,
     KINDS,
+    INIT,
+    HOST_NIC,
     COMPS,
     PINS,
     DEFAULT_CODE,

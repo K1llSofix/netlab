@@ -2,7 +2,7 @@
  * открытие схем двойным щелчком по файлу .netlab, вопрос о несохранённых изменениях. */
 'use strict';
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -379,6 +379,10 @@ if (!SMOKE && !SMOKE_UPDATE && !app.requestSingleInstanceLock()) {
     const f = fileFromArgs(argv);
     if (f) openPath(f);
   });
-  app.whenReady().then(createWindow);
+  app.whenReady().then(() => {
+    // запись видео схемы (getDisplayMedia): снимается окно NetLab, без выбора источника
+    try { session.defaultSession.setDisplayMediaRequestHandler((req, cb) => cb({ video: req.frame })); } catch (e) { /* старая версия Electron */ }
+    createWindow();
+  });
   app.on('window-all-closed', () => app.quit());
 }

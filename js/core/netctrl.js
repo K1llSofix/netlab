@@ -32,12 +32,13 @@
     const headers = Object.assign({}, (opts && opts.headers) || {});
     let body = opts ? opts.body : undefined;
     if (body != null && typeof body !== 'string') body = JSON.stringify(body);
-    const hp = u.host + (u.port && u.port !== P.PORT_HTTP ? ':' + u.port : '');
-    return this.tcpRequest(u.host, u.port || P.PORT_HTTP, { http: String(method || 'GET').toUpperCase(), path, host: u.host, headers, body: body == null ? null : String(body) }, (d) => d && d.http === 'RESP', (r) => {
-      if (!r.ok) { cb({ ok: false, error: r.error, url: 'http://' + hp + path }); return; }
+    const hp = u.host + (u.port && u.port !== (u.https ? 443 : P.PORT_HTTP) ? ':' + u.port : '');
+    const scheme = u.https ? 'https://' : 'http://';
+    return this.tcpRequest(u.host, u.port || P.PORT_HTTP, { http: String(method || 'GET').toUpperCase(), path, host: u.host, headers, body: body == null ? null : String(body), https: u.https || undefined, insecure: (opts && opts.insecure) || undefined }, (d) => d && d.http === 'RESP', (r) => {
+      if (!r.ok) { cb({ ok: false, error: r.error, url: scheme + hp + path, cert: r.cert, tls: r.tls }); return; }
       let json = null;
       try { json = JSON.parse(r.data.body); } catch (e) { json = null; }
-      cb({ ok: true, status: r.data.status, reason: r.data.reason, body: String(r.data.body || ''), json, headers: r.data.headers || {}, url: 'http://' + hp + path });
+      cb({ ok: true, status: r.data.status, reason: r.data.reason, body: String(r.data.body || ''), json, headers: r.data.headers || {}, url: scheme + hp + path, tls: r.tls });
     });
   };
 
@@ -50,7 +51,7 @@
     return null;
   }
   function platformOf(d) {
-    const m = { router: 'CISCO' + String(d.model).replace(/-.*$/, ''), switch: 'WS-C' + d.model, asa: 'ASA5506', wlc: 'AIR-CT2504' }[d.type];
+    const m = { router: 'CISCO' + String(d.model).replace(/-.*$/, ''), switch: 'WS-C' + d.model, asa: d.model, wlc: 'AIR-CT2504' }[d.type];
     return m || d.model;
   }
   function familyOf(d) { return { router: 'Routers', switch: 'Switches and Hubs', asa: 'Security', wlc: 'Wireless Controller' }[d.type] || 'Unified AP'; }

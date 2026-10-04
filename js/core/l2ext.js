@@ -740,7 +740,7 @@
       if (p.bundle && p.bundle.primary !== i) return;
       const name = p.bundle ? 'Po' + p.bundle.group : C.shortIf(p.name);
       const edge = isPortfast(dev, p) && p.mode === 'access';
-      io.out(C.pad(name, 17) + C.pad(ROLE[p.stpRoleV[v]], 5) + C.pad(p.stpV[v] === 'blocking' ? 'BLK' : 'FWD', 4) + C.pad(String(bundleCost(dev, i)), 10) + C.pad('128.' + (i + 1), 9) + 'P2p' + (edge ? ' Edge' : ''));
+      io.out(C.pad(name, 17) + C.pad(ROLE[p.stpRoleV[v]], 5) + C.pad(p.stpPhase === 'listening' ? 'LIS' : p.stpPhase === 'learning' ? 'LRN' : p.stpV[v] === 'blocking' ? 'BLK' : 'FWD', 4) + C.pad(String(bundleCost(dev, i)), 10) + C.pad('128.' + (i + 1), 9) + 'P2p' + (edge ? ' Edge' : ''));
     });
     io.out('');
     return true;

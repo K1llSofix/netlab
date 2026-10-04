@@ -1,6 +1,6 @@
 /* NetLab — проверка и установка обновлений (electron-updater, GitHub Releases).
  * Установленная версия скачивает новый установщик и ставит его при перезапуске.
- * Portable-версия себя не обновляет — ей предлагается скачать новый файл.
+ * Portable-версия и неподписанная сборка для macOS себя не обновляют — им предлагается скачать новый файл.
  * Для проверки без GitHub: NETLAB_UPDATE_URL=http://адрес/папки (там latest.yml и установщик). */
 'use strict';
 
@@ -11,6 +11,11 @@ const pkg = require('../package.json');
 
 const TEST_URL = process.env.NETLAB_UPDATE_URL || '';
 const PORTABLE = !!process.env.PORTABLE_EXECUTABLE_DIR;
+// macOS: без подписи Apple автоустановка невозможна — новая версия скачивается со страницы выпуска
+const MAC = process.platform === 'darwin';
+// Linux: AppImage обновляется сам, пакет .deb — через страницу выпуска
+const DEB = process.platform === 'linux' && !process.env.APPIMAGE;
+const MANUAL = PORTABLE || MAC || DEB;
 
 /**
  * Куда публикуются обновления. В собранной программе раздела build в package.json нет
@@ -72,7 +77,7 @@ function status() {
   if (!u) reason = 'Модуль обновлений не установлен';
   else if (!feed()) reason = 'Не задан адрес, где публикуются обновления (package.json → build.publish)';
   else if (!app.isPackaged && !TEST_URL) reason = 'Обновления проверяются только в собранной программе (npm run dist), а не при запуске через npm start';
-  return { version: app.getVersion(), portable: PORTABLE, supported: !reason, reason, page: pageUrl() };
+  return { version: app.getVersion(), portable: MANUAL, mac: MAC, supported: !reason, reason, page: pageUrl() };
 }
 
 /** Заметки о выпуске → строка (у GitHub это HTML, у latest.yml — текст или список). */
@@ -117,7 +122,7 @@ function init(getWin, allowQuit) {
     u.setFeedURL(feed());
     u.on('update-available', (i) => {
       st.info = i;
-      send({ type: 'available', manual: st.manual, version: i.version, current: app.getVersion(), notes: notesText(i.releaseNotes), date: i.releaseDate || null, portable: PORTABLE, page: pageUrl(i.version) });
+      send({ type: 'available', manual: st.manual, version: i.version, current: app.getVersion(), notes: notesText(i.releaseNotes), date: i.releaseDate || null, portable: MANUAL, mac: MAC, deb: DEB, page: pageUrl(i.version) });
     });
     u.on('update-not-available', () => send({ type: 'none', manual: st.manual, version: app.getVersion() }));
     u.on('download-progress', (p) => send({ type: 'progress', percent: p.percent, transferred: p.transferred, total: p.total, bps: p.bytesPerSecond }));
@@ -145,8 +150,8 @@ function init(getWin, allowQuit) {
 
   ipcMain.handle('update:download', async () => {
     if (!st.info) return { ok: false, error: 'Сначала проверьте обновления' };
-    if (PORTABLE) {
-      const link = portableUrl(st.info.version);
+    if (MANUAL) {
+      const link = MAC || DEB ? pageUrl(st.info.version) : portableUrl(st.info.version);
       if (isWeb(link)) await shell.openExternal(link);
       return { ok: true, opened: link };
     }

@@ -64,9 +64,11 @@
     return d.bt;
   }
 
-  const distance = (a, b) => Math.hypot((a.x || 0) - (b.x || 0), (a.y || 0) - (b.y || 0));
+  // в физическом пространстве (город → здание → шкаф) — метры, дальность Bluetooth 10 м
+  const metric = (a) => !!(NS.places && a.net && NS.places.on(a.net));
+  const distance = (a, b) => (metric(a) ? NS.places.distance(a.net, a, b) : Math.hypot((a.x || 0) - (b.x || 0), (a.y || 0) - (b.y || 0)));
   const alive = (d) => has(d) && d.power && cfg(d).on;
-  const inRange = (a, b) => distance(a, b) <= RANGE;
+  const inRange = (a, b) => distance(a, b) <= (metric(a) ? 10 : RANGE);
 
   function frame(op, from, to, extra) {
     return { type: 'BT', src: null, dst: null, vlan: null, payload: Object.assign({ op, from: from.name, to: to ? to.name : null }, extra || {}) };

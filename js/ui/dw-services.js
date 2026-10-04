@@ -186,6 +186,26 @@
 
   /* ================= HTTP ================= */
 
+  /** Сертификат HTTPS (порт 443): имя, альтернативные имена, издатель, срок. */
+  function certSection(app, id, box) {
+    const dev = app.net.getDevice(id);
+    const T = NS.tls;
+    if (!T) return;
+    const c = T.certOf(dev);
+    const e = err();
+    const cn = h('input', { class: 'inp mono', value: c.cn, placeholder: 'www.example.com' });
+    const san = h('input', { class: 'inp mono', value: (c.san || []).join(', '), placeholder: 'www.example.com, example.com, 192.168.1.10' });
+    const issuer = DW.select([['self', 'Самоподписанный (браузер предупредит)'], [T.TRUSTED, 'Выдан ' + T.TRUSTED + ' (доверенный)']], c.issuer, null, { style: { width: 'auto' } });
+    const expired = h('input', { type: 'checkbox', checked: !!c.expired });
+    const save = () => DW.apply(app, () => T.setCert(app.net.getDevice(id), { cn: cn.value, san: san.value.split(/[\s,]+/), issuer: issuer.value, expired: expired.checked }), e, 'Сертификат сохранён');
+    box.appendChild(DW.section('Сертификат HTTPS (порт 443)'));
+    box.appendChild(DW.form(lbl('Имя (CN)'), cn, lbl('Другие имена (SAN)'), san, lbl('Издатель'), issuer, lbl('Срок действия'), h('label', { class: 'row' }, expired, 'истёк (для упражнения)'),
+      h('div', { class: 'full row' }, h('button', { class: 'btn primary small', onClick: save }, 'Сохранить сертификат'),
+        h('button', { class: 'btn outline small', onClick: () => DW.apply(app, () => T.setCert(app.net.getDevice(id), null), e, 'Сертификат по умолчанию') }, 'Сбросить'), e)));
+    box.appendChild(h('div', { class: 'hint-box', style: { marginBottom: '10px' } }, 'Браузер и curl доверяют только сертификатам от ' + T.TRUSTED + ' и проверяют, что адрес сайта (имя или IP) есть в CN или SAN. ' +
+      'Самоподписанный сертификат шифрует трафик, но браузер покажет «Подключение не защищено».'));
+  }
+
   function httpSection(app, id, box) {
     const dev = app.net.getDevice(id);
     const svc = dev.httpd;
@@ -206,6 +226,8 @@
       t.focus();
     };
     const files = [...svc.files.keys()].sort();
+    certSection(app, id, box);
+    box.appendChild(DW.section('Файлы сайта'));
     box.appendChild(h('table', { class: 'tbl' },
       h('tr', null, h('th', null, 'Файл'), h('th', null, 'Размер'), h('th'), h('th')),
       files.length ? files.map((f) => h('tr', null, h('td', { class: 'mono' }, f), h('td', { class: 'muted' }, svc.files.get(f).length + ' симв.'),

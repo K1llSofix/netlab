@@ -10,6 +10,9 @@
   const CABLE_NAME = { straight: 'медного кабеля', cross: 'медного кабеля', fiber: 'оптического кабеля', serial: 'кабеля Serial', phone: 'телефонной линии', coaxial: 'коаксиального кабеля', iot: 'IoT-кабеля', console: 'консольного кабеля' };
   const DEFAULTS = { enabled: false, scale: 0.25, wifi: 100, cell: 2000 };
 
+  /** Включено физическое пространство (город → здание → шкаф): расстояния — по нему, в метрах. */
+  const placesOn = (net) => !!(NS.places && NS.places.on(net));
+
   function cfg(net) {
     if (!net.physical) net.physical = Object.assign({}, DEFAULTS);
     return net.physical;
@@ -20,6 +23,7 @@
     const a = net.devices.get(l.a.dev);
     const b = net.devices.get(l.b.dev);
     if (!a || !b) return 0;
+    if (placesOn(net)) return NS.places.distance(net, a, b);
     return Math.hypot(a.x - b.x, a.y - b.y) * cfg(net).scale;
   }
 
@@ -28,7 +32,7 @@
     const base = issue.call(this, l);
     if (base || l.wireless) return base;
     const c = this.physical;
-    if (!c || !c.enabled) return null;
+    if ((!c || !c.enabled) && !placesOn(this)) return null;
     const max = MAX_LEN[l.cable];
     if (!max) return null;
     const len = linkLength(this, l);
@@ -39,11 +43,13 @@
   const wifi = Network.prototype.wifiRange;
   Network.prototype.wifiRange = function () {
     const c = this.physical;
+    if (placesOn(this)) return c ? c.wifi : DEFAULTS.wifi;
     return c && c.enabled ? c.wifi / c.scale : wifi.call(this);
   };
   const cell = Network.prototype.cellRange;
   Network.prototype.cellRange = function () {
     const c = this.physical;
+    if (placesOn(this)) return c ? c.cell : DEFAULTS.cell;
     return c && c.enabled ? c.cell / c.scale : cell.call(this);
   };
 
@@ -70,5 +76,5 @@
     },
   });
 
-  NS.physical = { cfg, linkLength, setPhysical, MAX_LEN, DEFAULTS };
+  NS.physical = { cfg, linkLength, setPhysical, placesOn, MAX_LEN, DEFAULTS, CABLE_NAME };
 })(globalThis.NetLab = globalThis.NetLab || {});

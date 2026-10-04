@@ -141,6 +141,12 @@
       UI.clear(this.gShapes);
       this.linkEls.clear();
 
+      // наглядный слой (VLAN, STP, OSPF, загрузка)
+      const mode = app.settings.overlay;
+      this.ovState = this.ovState && this.ovState.mode === mode ? this.ovState : { mode };
+      try { this.ov = mode && NS.overlay ? NS.overlay.compute(net, mode, this.ovState) : null; } catch (e) { console.error(e); this.ov = null; }
+      this.renderLegend();
+
       for (const sh of net.shapes) this.renderShape(sh);
       for (const l of net.links.values()) this.renderLink(l);
       if (NS.bt) {
@@ -152,7 +158,7 @@
       }
 
       for (const d of net.devices.values()) {
-        const g = s('g', { class: 'dev' + (this.selection.has(d.id) ? ' selected' : '') + (d.power ? '' : ' off') + (this.cableSrc && this.cableSrc.dev === d.id ? ' cable-src' : '') + (this.pduSrc === d.id ? ' cable-src' : ''), 'data-dev': d.id, transform: 'translate(' + d.x + ',' + d.y + ')' });
+        const g = s('g', { class: 'dev' + (this.flashId === d.id ? ' found' : '') + (this.selection.has(d.id) ? ' selected' : '') + (d.power ? '' : ' off') + (this.cableSrc && this.cableSrc.dev === d.id ? ' cable-src' : '') + (this.pduSrc === d.id ? ' cable-src' : ''), 'data-dev': d.id, transform: 'translate(' + d.x + ',' + d.y + ')' });
         g.appendChild(s('rect', { class: 'selbox', x: -40, y: -29, width: 80, height: 84, rx: 9 }));
         const icon = UI.svgFrom(UI.deviceIconFor ? UI.deviceIconFor(d) : UI.deviceIcon(d.type, d.model), { x: -ICON_W / 2, y: -ICON_H / 2 - 4, width: ICON_W, height: ICON_H, viewBox: '0 0 64 48', class: 'icon' });
         g.appendChild(icon);
@@ -168,6 +174,8 @@
             if (y > 57 + 12 * 2) break;
           }
         }
+        const ob = this.ov && this.ov.devs.get(d.id);
+        if (ob) g.appendChild(s('text', { class: 'ov-badge', y: -33, fill: ob.color }, s('title', null, ob.title || ''), ob.badge));
         const status = UI.deviceStatusText ? UI.deviceStatusText(d) : null;
         if (status) g.appendChild(s('text', { class: 'addr dev-status ' + (status.cls || ''), y: app.settings.showIps && d.ifaces && d.ifaces.some((f) => f.ip != null && f.kind !== 'loop') ? 70 : 57 }, status.text));
         if (d.unreadCount && d.unreadCount() > 0) {
@@ -224,8 +232,20 @@
       const sa = net.portVisualState(a, l.a.port);
       const sb = net.portVisualState(b, l.b.port);
       const down = sa === 'down' || sb === 'down';
-      const cls = 'link-line c-' + (l.wireless ? 'wireless' : l.cable) + (down ? ' down' : '') + (this.selLink === l.id ? ' sel' : '') + (net.linkIssue(l) ? ' issue' : '');
-      const line = s('line', { class: cls, x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+      const cls = 'link-line c-' + (l.wireless ? 'wireless' : l.cable) + (down ? ' down' : '') + (this.selLink === l.id ? ' sel' : '') + (net.linkIssue(l) ? ' issue' : '') + (this.pathHl && this.pathHl.has(l.id) ? ' path-hl' : '');
+      const ol = this.ov && this.ov.links.get(l.id);
+      const line = s('line', { class: cls + (ol ? ' ov' : ''), x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+      if (ol) {
+        line.style.stroke = ol.color;
+        line.style.strokeWidth = ol.width;
+        line.style.strokeDasharray = ol.dash || 'none';
+        if (ol.title) line.appendChild(s('title', null, ol.title));
+        if (ol.label) {
+          const mx = (a.x + b.x) / 2;
+          const my = (a.y + b.y) / 2;
+          this.gLabels.appendChild(s('text', { class: 'ov-label', x: mx, y: my - 7, 'text-anchor': 'middle', fill: ol.color }, ol.label));
+        }
+      }
       const hit = s('line', { class: 'link-hit', x1: a.x, y1: a.y, x2: b.x, y2: b.y, 'data-link': l.id });
       this.gLinks.append(line, hit);
       this.linkEls.set(l.id, line);
@@ -247,12 +267,12 @@
         this.gLinks.appendChild(s('g', { class: 'dce-clock', transform: 'translate(' + cx.toFixed(1) + ',' + cy.toFixed(1) + ')' }, s('title', null, 'DCE — эта сторона задаёт clock rate'), s('circle', { r: 6 }), s('path', { d: 'M0 -3.5V0l2.4 1.6' })));
       }
       const phys = net.physical;
-      if (phys && phys.enabled && !l.wireless && NS.physical) {
+      if (((phys && phys.enabled) || (NS.places && NS.places.on(net))) && !l.wireless && NS.physical) {
         const m = NS.physical.linkLength(net, l);
         const max = NS.physical.MAX_LEN[l.cable];
         const px = uy * 12;
         const py = -ux * 12;
-        this.gLabels.appendChild(s('text', { class: 'port-label len-label' + (max && m > max ? ' too-long' : ''), x: (a.x + b.x) / 2 + px, y: (a.y + b.y) / 2 + py + 3, 'text-anchor': 'middle' }, Math.round(m) + ' м'));
+        this.gLabels.appendChild(s('text', { class: 'port-label len-label' + (max && m > max ? ' too-long' : ''), x: (a.x + b.x) / 2 + px, y: (a.y + b.y) / 2 + py + 3, 'text-anchor': 'middle' }, Math.round(m) + (UI.lang === 'en' ? ' m' : ' м')));
       }
       if (this.app.settings.showPorts && len > 110 && !l.wireless) {
         const px = -uy * 11;
@@ -304,9 +324,49 @@
       this.renderRange();
     }
 
+    /** Показать устройство: в центр экрана (масштаб не меньше 100%), выделить и подсветить. */
+    focusDevice(id) {
+      const d = this.net.getDevice(id);
+      if (!d) return;
+      const r = this.svg.getBoundingClientRect();
+      const k = Math.max(this.view.k, 1);
+      this.view = { k, x: r.width / 2 - d.x * k, y: r.height / 2 - d.y * k };
+      this.applyView();
+      this.selection = new Set([id]);
+      this.flashId = id;
+      this.flashUntil = performance.now() + 1600;
+      this.app.needRender = true;
+      setTimeout(() => { if (this.flashId === id) { this.flashId = null; this.app.needRender = true; } }, 1700);
+    }
+
+    /** Легенда наглядного слоя в углу схемы. */
+    renderLegend() {
+      if (!this.legendEl) {
+        this.legendEl = h('div', { class: 'ov-legend' });
+        this.wrap.appendChild(this.legendEl);
+      }
+      const el = this.legendEl;
+      UI.clear(el);
+      const mode = this.app.settings.overlay;
+      if (!this.ov || !mode) { el.style.display = 'none'; return; }
+      el.style.display = '';
+      el.append(h('div', { class: 'ov-legend-title' }, NS.overlay.MODES[mode], h('button', { class: 'btn icon small', title: 'Выключить слой', onClick: () => { this.app.settings.overlay = null; this.app.savePrefs(); this.app.needRender = true; } }, UI.icon('close'))));
+      if (!this.ov.legend.length) el.append(h('div', { class: 'muted small' }, mode === 'ospf' ? 'OSPF не настроен' : 'Нет данных'));
+      for (const x of this.ov.legend) el.append(h('div', { class: 'ov-legend-row' }, h('span', { class: 'ov-swatch' + (x.dash ? ' dash' : ''), style: { background: x.dash ? 'none' : x.color, borderColor: x.color } }), x.text));
+    }
+
+    /** Подсветить путь пакета (кабели) на схеме; через ms снять подсветку. */
+    highlightPath(links, ms) {
+      this.pathHl = new Set(links || []);
+      for (const [id, el] of this.linkEls) el.classList.toggle('path-hl', this.pathHl.has(id));
+      clearTimeout(this.pathHlTimer);
+      if (this.pathHl.size) this.pathHlTimer = setTimeout(() => this.highlightPath([]), ms || 15000);
+    }
+
     /* ---------- анимация: пакеты, вспышки, отметки ---------- */
 
     frame(now, progress) {
+      if (this.app.settings.overlay === 'load' && now - (this.ovT || 0) > 1000) { this.ovT = now; this.app.needRender = true; }
       const act = this.net.activity;
       if (act.length) {
         for (const id of act) this.hot.set(id, now + 170);
@@ -417,6 +477,9 @@
         this.zoomBy(f, e.clientX, e.clientY);
       }, { passive: false });
       svg.addEventListener('pointerleave', () => { UI.hideTip(); clearTimeout(this.hoverTimer); });
+      // средняя кнопка мыши: без автопрокрутки браузера и без вставки из буфера (Linux)
+      svg.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
+      svg.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
       this.wrap.addEventListener('dragover', (e) => {
         if (e.dataTransfer.types.includes('application/x-netlab-device')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }
       });
@@ -465,12 +528,15 @@
         return;
       }
 
-      if (e.button === 1 || e.button === 2 || (e.button === 0 && tg.kind === 'empty' && (tool === 'select' || tool === 'inspect' || e.altKey) && !e.shiftKey)) {
-        if (e.button === 2) return;
+      if (e.button === 2) return;
+      // средняя кнопка — перемещение по полю; левая с Alt или палец на пустом месте — тоже
+      if (e.button === 1 || (e.button === 0 && tg.kind === 'empty' && (e.altKey || (e.pointerType === 'touch' && (tool === 'select' || tool === 'inspect'))))) {
+        e.preventDefault();
         this.startPan(e);
         return;
       }
       if (e.button !== 0) return;
+      if (tg.kind === 'empty' && tool === 'inspect') { this.clearSelection(); return; }
 
       if (tg.kind === 'pkt') { this.app.sim.inspectInFlight(tg.id); return; }
 
@@ -552,11 +618,20 @@
         this.app.selectionChanged();
         return;
       }
-      if (tg.kind === 'empty' && e.shiftKey) {
-        this.drag = { kind: 'rubber', start: w, el: s('rect', { class: 'rubber' }) };
+      if (tg.kind === 'empty') {
+        // рамка выделения; с Shift или Ctrl — добавить к уже выделенному
+        this.drag = { kind: 'rubber', start: w, el: s('rect', { class: 'rubber' }), add: e.shiftKey || e.ctrlKey || e.metaKey, moved: false, sx: e.clientX, sy: e.clientY };
         this.gOverlay.appendChild(this.drag.el);
         this.svg.setPointerCapture(e.pointerId);
       }
+    }
+
+    clearSelection() {
+      if (!this.selection.size && !this.selLink) return;
+      this.selection.clear();
+      this.selLink = null;
+      this.updateSelection();
+      this.app.selectionChanged();
     }
 
     onMove(e) {
@@ -590,6 +665,8 @@
           d.sh.h = Math.max(20, Math.round((d.h0 + w.y - d.start.y) / 8) * 8);
           this.renderPositions();
         } else if (d.kind === 'rubber' || d.kind === 'shape') {
+          if (d.kind === 'rubber' && !d.moved && Math.abs(e.clientX - d.sx) + Math.abs(e.clientY - d.sy) < 4) return;
+          d.moved = true;
           const x = Math.min(d.start.x, w.x);
           const y = Math.min(d.start.y, w.y);
           const ww = Math.abs(w.x - d.start.x);
@@ -619,13 +696,8 @@
       this.drag = null;
       try { this.svg.releasePointerCapture(e.pointerId); } catch (err) { /* уже отпущено */ }
       this.svg.classList.remove('panning');
-      if (d.kind === 'pan' && !d.moved && (this.app.tool === 'select' || this.app.tool === 'inspect')) {
-        if (this.selection.size || this.selLink) {
-          this.selection.clear();
-          this.selLink = null;
-          this.updateSelection();
-          this.app.selectionChanged();
-        }
+      if (d.kind === 'pan' && !d.moved && e.pointerType === 'touch' && (this.app.tool === 'select' || this.app.tool === 'inspect')) {
+        this.clearSelection();
       } else if ((d.kind === 'move' || d.kind === 'resize') && d.moved) {
         this.app.commitSnapshot(d.snap);
       } else if (d.kind === 'shape') {
@@ -639,6 +711,9 @@
       } else if (d.kind === 'rubber') {
         const r = d.rect || { x: 0, y: 0, w: 0, h: 0 };
         d.el.remove();
+        // щелчок по пустому месту без Shift — снять выделение
+        if (!d.moved) { if (!d.add) this.clearSelection(); return; }
+        if (!d.add) { this.selection.clear(); this.selLink = null; }
         const inside = (x, y) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
         for (const dev of this.net.devices.values()) if (inside(dev.x, dev.y)) this.selection.add(dev.id);
         for (const n of this.net.notes) if (inside(n.x, n.y)) this.selection.add(n.id);
@@ -671,10 +746,12 @@
         items.push({ label: 'Физический вид (модули, питание)', onClick: () => this.app.openDevice(d.id, 'physical') });
         if (NS.cli.isIos(d)) items.push({ label: 'CLI — консоль IOS', onClick: () => this.app.openDevice(d.id, 'cli') });
         if (d.sendMail && d.type !== 'printer') {
-          items.push({ label: 'Командная строка', onClick: () => { this.app.deskState(d.id).app = 'cmd'; this.app.openDevice(d.id, 'desktop'); } });
+          items.push({ label: d.os === 'linux' ? 'Терминал Linux (bash)' : 'Командная строка', onClick: () => { this.app.deskState(d.id).app = 'cmd'; this.app.openDevice(d.id, 'desktop'); } });
           items.push({ label: 'Рабочий стол', onClick: () => this.app.openDevice(d.id, 'desktop') });
         }
         if (d.ifaces || d.macTable) items.push({ label: 'Таблицы (инспектор)…', onClick: () => this.inspectMenu(e.clientX, e.clientY, d) });
+        if (UI.diagPingable && UI.diagPingable(d)) items.push({ label: 'Почему не работает?…', onClick: () => UI.whyDialog(this.app, d.id) });
+        for (const fn of UI.devMenuExtra || []) items.push(...fn(this, d));
         items.push('-',
           { label: 'Переименовать…', onClick: () => this.app.renameDevice(d.id) },
           { label: d.power ? 'Выключить питание' : 'Включить питание', onClick: () => this.app.togglePower(d.id) },
@@ -727,6 +804,7 @@
         }
       }
       items.push('-', { label: 'Заметку', onClick: () => this.app.addNote(w.x, w.y) });
+      for (const fn of UI.addMenuExtra || []) items.push(...fn(this, w));
       UI.menu(cx, cy, items, 'models');
     }
 

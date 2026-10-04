@@ -123,6 +123,7 @@
       if (f.kind === 'loop') return true;
       const hk = IpNode.ifaceUpHooks[f.kind];
       if (hk) return hk.call(this, f);
+      if (f.kind === 'sub' && this.ports[f.port] && this.ports[f.port].media === 'serial') return NS.fr ? NS.fr.subUp(this, f) : false;
       if (f.kind === 'sub' && f.vlan == null) return false;
       return this.net.isPortOperational(this, f.port);
     }
@@ -161,7 +162,7 @@
         f.ip = null;
         f.mask = null;
       } else {
-        if (f.kind === 'sub' && f.vlan == null) throw new Error('Сначала задайте VLAN подынтерфейса (encapsulation dot1Q)');
+        if (f.kind === 'sub' && f.vlan == null && !(this.ports[f.port] && this.ports[f.port].media === 'serial')) throw new Error('Сначала задайте VLAN подынтерфейса (encapsulation dot1Q)');
         const err = f.kind === 'loop' && U.prefixFromMask(mask) === 32 ? (ip >>> 24 === 0 ? 'Неверный адрес' : null) : U.validateHostIp(ip, mask);
         if (err) throw new Error(err);
         for (const g of this.ifaces) {
@@ -328,8 +329,20 @@
       if (opts.ifName && !this.ifaceByName(opts.ifName)) throw new Error('Интерфейс ' + opts.ifName + ' не найден');
       const ad = opts.ad || 1;
       if (!(ad >= 1 && ad <= 255)) throw new Error('Административное расстояние: 1–255');
-      if (this.routes.some((r) => r.net === net && r.mask === mask && r.nextHop === nextHop && (r.ifName || null) === (opts.ifName || null))) throw new Error('Такой маршрут уже есть');
-      this.routes.push({ net, mask, nextHop: nextHop == null ? null : nextHop, ifName: opts.ifName || null, ad });
+      const same = this.routes.find((r) => r.net === net && r.mask === mask && r.nextHop === nextHop && (r.ifName || null) === (opts.ifName || null));
+      const extra = {};
+      if (opts.track != null) extra.track = Number(opts.track);
+      if (opts.name) extra.name = String(opts.name);
+      if (same) {
+        // как в IOS: повторный ввод того же маршрута меняет расстояние, track и имя
+        if (same.ad === ad && same.track === extra.track && (same.name || null) === (extra.name || null)) throw new Error('Такой маршрут уже есть');
+        Object.assign(same, { ad }, extra);
+        if (extra.track == null) delete same.track;
+        if (!extra.name) delete same.name;
+        this.net.markRouting();
+        return;
+      }
+      this.routes.push(Object.assign({ net, mask, nextHop: nextHop == null ? null : nextHop, ifName: opts.ifName || null, ad }, extra));
       this.net.markRouting();
     }
 
@@ -885,7 +898,8 @@
     }
 
     serializeRoutes() {
-      return this.routes.map((r) => ({ net: U.ipStr(r.net), mask: U.ipStr(r.mask), nextHop: r.nextHop == null ? null : U.ipStr(r.nextHop), ifName: r.ifName || null, ad: r.ad || 1 }));
+      return this.routes.map((r) => Object.assign({ net: U.ipStr(r.net), mask: U.ipStr(r.mask), nextHop: r.nextHop == null ? null : U.ipStr(r.nextHop), ifName: r.ifName || null, ad: r.ad || 1 },
+        r.track != null ? { track: r.track } : {}, r.name ? { name: r.name } : {}));
     }
 
     loadRoutes(list) {
@@ -894,7 +908,9 @@
         const net = U.parseIp(r.net);
         const mask = U.parseMask(r.mask);
         const nh = r.nextHop ? U.parseIp(r.nextHop) : null;
-        if (net != null && mask != null && (nh != null || r.ifName)) this.routes.push({ net, mask, nextHop: nh, ifName: r.ifName || null, ad: r.ad || 1 });
+        if (net != null && mask != null && (nh != null || r.ifName)) {
+          this.routes.push(Object.assign({ net, mask, nextHop: nh, ifName: r.ifName || null, ad: r.ad || 1 }, r.track != null ? { track: Number(r.track) } : {}, r.name ? { name: String(r.name) } : {}));
+        }
       }
     }
 

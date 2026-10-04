@@ -149,6 +149,124 @@
     return list;
   }
 
+  /* ================= переменные задания ================= */
+
+  const VAR_RE = /\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}/g;
+  const LOCKS = ['add', 'remove', 'cables', 'rename', 'cli', 'config', 'physical', 'sim', 'diag'];
+
+  /** Подставить значения переменных вместо {{ИМЯ}}. */
+  function subst(v, values) {
+    if (typeof v !== 'string' || !values) return v;
+    return v.replace(VAR_RE, (m, n) => (values[n] != null ? String(values[n]) : m));
+  }
+
+  function normVar(v) {
+    const name = String((v && v.name) || '').trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(name)) return null;
+    if (v.kind === 'list') {
+      const list = (Array.isArray(v.list) ? v.list : String(v.list || '').split(/[,;\n]/)).map((x) => String(x).trim()).filter(Boolean).slice(0, 100);
+      return list.length ? { name, kind: 'list', list } : null;
+    }
+    let min = Math.round(Number(v.min));
+    let max = Math.round(Number(v.max));
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+    if (min > max) [min, max] = [max, min];
+    return { name, kind: 'range', min, max };
+  }
+
+  /** Случайные значения переменных (rnd — генератор 0…1, по умолчанию Math.random). */
+  function pickValues(vars, rnd) {
+    const r = rnd || Math.random;
+    const out = {};
+    for (const v of vars || []) {
+      if (v.kind === 'list') out[v.name] = v.list[Math.floor(r() * v.list.length) % v.list.length];
+      else out[v.name] = String(v.min + Math.floor(r() * (v.max - v.min + 1)));
+    }
+    return out;
+  }
+
+  /** У задания должны быть значения для всех его переменных — дописать недостающие. Возвращает true, если что-то добавлено. */
+  function ensureValues(act, rnd) {
+    const sec = open(act);
+    if (!sec || !sec.vars.length) return false;
+    const have = Object.assign({}, act.values || {});
+    const missing = sec.vars.filter((v) => have[v.name] == null);
+    if (!missing.length) return false;
+    Object.assign(have, pickValues(missing, rnd));
+    act.values = have;
+    return true;
+  }
+
+  const HOST_FIELDS = { ip: 'IP-адрес', mask: 'маска', gateway: 'шлюз', dns: 'DNS-сервер' };
+
+  /**
+   * Свой пункт оценки (можно с переменными {{ИМЯ}}):
+   *  { kind: 'cfg', device, section, line } — строка running-config (section — строка раздела, например «interface GigabitEthernet0/0»);
+   *  { kind: 'host', device, field: ip|mask|gateway|dns, value } — адрес компьютера или сервера (первый интерфейс);
+   *  { kind: 'port', device, port, up } — порт включён / выключен.
+   * net — схема, по которой узнаётся имя интерфейса узла (ответ или текущая).
+   */
+  function customItem(spec, net) {
+    const dev = String(spec.device || '').trim();
+    if (!dev) throw new Error('Выберите устройство');
+    const base = { points: Math.max(0, Math.min(100, Number(spec.points) || 1)), custom: spec.kind };
+    if (spec.hint) base.hint = String(spec.hint);
+    if (spec.kind === 'cfg') {
+      const line = String(spec.line || '').trim();
+      const sect = String(spec.section || '').trim();
+      if (!line) throw new Error('Введите строку конфигурации');
+      return Object.assign(base, { key: 'cfg|' + dev + '|' + sect + '|' + line, path: [dev, 'Конфигурация', sect || 'глобальные'], label: line, value: true });
+    }
+    if (spec.kind === 'host') {
+      if (!HOST_FIELDS[spec.field]) throw new Error('Неизвестное поле');
+      const val = String(spec.value || '').trim();
+      if (!val) throw new Error('Введите значение');
+      let p = [spec.field];
+      if (spec.field === 'ip' || spec.field === 'mask') {
+        const d = net && net.findByName(dev);
+        const f = d && d.ifaces && d.ifaces[0];
+        if (!f) throw new Error('У ' + dev + ' нет сетевого интерфейса');
+        p = ['ifaces', f.name, spec.field];
+      }
+      return Object.assign(base, { key: 'set|' + dev + '|' + p.join('/'), path: [dev, 'Настройки'].concat(p.slice(0, -1).map(lbl)), label: HOST_FIELDS[spec.field] + ' = ' + val, value: JSON.stringify(val) });
+    }
+    if (spec.kind === 'port') {
+      const port = String(spec.port || '').trim();
+      if (!port) throw new Error('Выберите порт');
+      return Object.assign(base, { key: 'port|' + dev + '|' + port, path: [dev, 'Порты'], label: port + ': ' + (spec.up ? 'включён' : 'выключен (shutdown)'), value: !!spec.up });
+    }
+    throw new Error('Неизвестный вид пункта');
+  }
+
+  /**
+   * Начало попытки ученика: задание из мастера (fresh) получает новые значения переменных,
+   * а сохранённая работа ученика сохраняет свои. Возвращает true, если значения изменились.
+   */
+  function startAttempt(act, rnd) {
+    const sec = open(act);
+    if (!sec) return false;
+    if (act.fresh) {
+      delete act.fresh;
+      if (!sec.vars.length) return true;
+      act.values = pickValues(sec.vars, rnd);
+      return true;
+    }
+    return ensureValues(act, rnd);
+  }
+
+  /** Результат проверки в CSV (разделитель «;», UTF-8 с BOM — открывается в Excel). */
+  function resultCsv(act, r, meta) {
+    const q = (x) => '"' + String(x == null ? '' : x).replace(/"/g, '""') + '"';
+    const rows = [
+      ['Задание', act.title], ['Ученик', (meta && meta.student) || act.student || ''], ['Дата', (meta && meta.date) || ''],
+      ['Процент', String(r.percent).replace('.', ',')], ['Баллы', r.got + ' из ' + r.total], [],
+      ['Раздел', 'Пункт', 'Баллы', 'Выполнено'],
+    ];
+    for (const it of r.items) rows.push([it.path.join(' / '), it.label, it.points, it.ok ? 'да' : 'нет']);
+    for (const t of r.tests) rows.push(['Проверка связи', t.from + ' → ' + t.to + (t.expect !== false ? ' (связь есть)' : ' (связи нет)'), t.points, t.ok ? 'да' : 'нет']);
+    return '﻿' + rows.map((row) => row.map(q).join(';')).join('\r\n') + '\r\n';
+  }
+
   /* ================= проверка ================= */
 
   /** Прогнать проверки связи на копии схемы (сама схема ученика не меняется). */
@@ -174,39 +292,55 @@
     }
   }
 
-  /** Проверить схему ученика по заданию. Возвращает { percent, got, total, items, tests }. */
-  function check(net, act) {
+  /**
+   * Проверить схему ученика по заданию. Возвращает { percent, got, total, items, tests }.
+   * opts.tests === false — без проверок связи (быстро: для «живого» счёта).
+   */
+  function check(net, act, opts) {
     const sec = open(act);
     if (!sec) throw new Error('Задание повреждено или создано другой версией NetLab');
+    const vals = act.values || {};
     const have = facts(net);
     let got = 0;
     let total = 0;
     const items = sec.items.map((it) => {
-      const f = have.get(it.key);
-      const ok = !!f && stable(f.value) === stable(it.value);
+      const key = subst(it.key, vals);
+      const want = typeof it.value === 'string' ? subst(it.value, vals) : it.value;
+      const f = have.get(key);
+      const ok = !!f && stable(f.value) === stable(want);
       const pts = Number(it.points) || 0;
       total += pts;
       if (ok) got += pts;
-      return { key: it.key, path: it.path, label: it.label, points: pts, ok, actual: f ? f.label : null };
+      return { key, path: it.path.map((x) => subst(x, vals)), label: subst(it.label, vals), points: pts, ok, actual: f ? f.label : null, hint: it.hint ? subst(it.hint, vals) : '' };
     });
-    const tests = runTests(net, sec.tests);
+    const testList = sec.tests.map((t) => Object.assign({}, t, { to: subst(t.to, vals) }));
+    const tests = opts && opts.tests === false ? [] : runTests(net, testList);
+    if (opts && opts.tests === false) for (const t of testList) total += Number(t.points) || 0;
     for (const t of tests) { const pts = Number(t.points) || 0; total += pts; if (t.ok) got += pts; }
-    return { percent: total ? Math.floor((got / total) * 1000) / 10 : 0, got, total, items, tests };
+    return { percent: total ? Math.floor((got / total) * 1000) / 10 : 0, got, total, items, tests, faults: sec.faults };
   }
 
   /* ================= задание ================= */
 
-  /** Закрытая часть задания: { answer, initial, items, tests }. */
+  /** Закрытая часть задания: { answer, initial, items, tests, vars }. */
   function open(act) {
     if (!act) return null;
     const s = decode(act.secret);
     if (!s) return null;
-    return { answer: s.answer || null, initial: s.initial || null, items: Array.isArray(s.items) ? s.items : [], tests: Array.isArray(s.tests) ? s.tests : [] };
+    return { answer: s.answer || null, initial: s.initial || null, items: Array.isArray(s.items) ? s.items : [], tests: Array.isArray(s.tests) ? s.tests : [],
+      vars: Array.isArray(s.vars) ? s.vars.map(normVar).filter(Boolean) : [], faults: Array.isArray(s.faults) ? s.faults : [] };
   }
 
   /** Собрать задание из черновика мастера. */
   function build(d) {
-    const items = (d.items || []).map((it) => ({ key: String(it.key), path: (it.path || []).map(String), label: String(it.label || ''), value: it.value, points: Math.max(0, Math.min(100, Number(it.points) || 0)) }));
+    const items = (d.items || []).map((it) => {
+      const o = { key: String(it.key), path: (it.path || []).map(String), label: String(it.label || ''), value: it.value, points: Math.max(0, Math.min(100, Number(it.points) || 0)) };
+      if (it.hint) o.hint = String(it.hint).slice(0, 500);
+      if (it.custom) o.custom = it.custom;
+      return o;
+    });
+    const vars = (d.vars || []).map(normVar).filter(Boolean);
+    const locks = LOCKS.filter((k) => d.locks && d.locks[k]);
     const tests = (d.tests || []).filter((t) => t && t.from && t.to).map((t) => ({ from: String(t.from), to: String(t.to), expect: t.expect !== false, points: Math.max(0, Math.min(100, Number(t.points) || 0)) }));
     return {
       v: VERSION,
@@ -215,15 +349,19 @@
       timer: Math.max(0, Math.min(600, Math.round(Number(d.timer) || 0))),
       feedback: ['full', 'score', 'none'].includes(d.feedback) ? d.feedback : 'full',
       lock: d.lock ? String(d.lock) : '',
-      secret: encode({ answer: d.answer || null, initial: d.initial || null, items, tests }),
+      locks,
+      live: !!d.live,
+      fresh: vars.length ? true : undefined,
+      secret: encode({ answer: d.answer || null, initial: d.initial || null, items, tests, vars, faults: (d.faults || []).map((f) => ({ dev: String(f.dev || ''), text: String(f.text || ''), fix: String(f.fix || '') })) }),
     };
   }
 
   /** Черновик мастера из задания (для правки). */
   function draft(act) {
-    const s = open(act) || { answer: null, initial: null, items: [], tests: [] };
+    const s = open(act) || { answer: null, initial: null, items: [], tests: [], vars: [], faults: [] };
     return { title: act ? act.title : 'Задание', instructions: act ? act.instructions : '', timer: act ? act.timer : 0, feedback: act ? act.feedback : 'full', lock: act ? act.lock : '',
-      answer: s.answer, initial: s.initial, items: s.items.map((x) => Object.assign({}, x)), tests: s.tests.map((x) => Object.assign({}, x)) };
+      locks: Object.fromEntries(((act && act.locks) || []).map((k) => [k, true])), live: !!(act && act.live),
+      answer: s.answer, initial: s.initial, items: s.items.map((x) => Object.assign({}, x)), tests: s.tests.map((x) => Object.assign({}, x)), vars: s.vars.map((x) => Object.assign({}, x)), faults: (s.faults || []).map((x) => Object.assign({}, x)) };
   }
 
   /** Снимок схемы без самого задания (ответ и начальная схема не должны содержать вложенных заданий). */
@@ -236,13 +374,91 @@
   NS.netExt.push({
     key: 'task',
     init(net) { net.task = null; },
-    save(net) { return net.task ? Object.assign({}, net.task) : null; },
+    save(net) {
+      if (!net.task) return null;
+      const o = Object.assign({}, net.task);
+      for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k];
+      return o;
+    },
     load(net, d) {
       net.task = d && typeof d === 'object' && d.v === VERSION && typeof d.secret === 'string'
-        ? { v: VERSION, title: String(d.title || 'Задание'), instructions: String(d.instructions || ''), timer: Number(d.timer) || 0, feedback: ['full', 'score', 'none'].includes(d.feedback) ? d.feedback : 'full', lock: String(d.lock || ''), secret: d.secret }
+        ? {
+          v: VERSION, title: String(d.title || 'Задание'), instructions: String(d.instructions || ''), timer: Number(d.timer) || 0, feedback: ['full', 'score', 'none'].includes(d.feedback) ? d.feedback : 'full',
+          lock: String(d.lock || ''), locks: Array.isArray(d.locks) ? d.locks.filter((k) => LOCKS.includes(k)) : [], live: !!d.live, secret: d.secret,
+          values: d.values && typeof d.values === 'object' ? Object.fromEntries(Object.entries(d.values).map(([k, v]) => [k, String(v)])) : undefined,
+          student: d.student ? String(d.student).slice(0, 80) : undefined,
+          fresh: d.fresh ? true : undefined,
+        }
         : null;
     },
   });
 
-  NS.activity = { facts, candidates, check, runTests, build, draft, open, snapshot, encode, decode, passHash, VERSION };
+  /* ================= сводка по классу ================= */
+
+  /** Разобрать CSV результата (resultCsv): ; как разделитель, строки в кавычках. */
+  function parseCsv(text) {
+    const rows = [];
+    let row = [];
+    let cur = '';
+    let q = false;
+    const s = String(text || '').replace(/^﻿/, '');
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (q) {
+        if (c === '"') { if (s[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c;
+        continue;
+      }
+      if (c === '"') q = true;
+      else if (c === ';' || c === ',') { row.push(cur); cur = ''; } else if (c === '\n' || c === '\r') {
+        if (c === '\r' && s[i + 1] === '\n') i++;
+        row.push(cur); cur = '';
+        rows.push(row); row = [];
+      } else cur += c;
+    }
+    if (cur || row.length) { row.push(cur); rows.push(row); }
+    return rows;
+  }
+
+  function parseResultCsv(text) {
+    const rows = parseCsv(text);
+    const meta = {};
+    let i = 0;
+    for (; i < rows.length; i++) {
+      const r = rows[i];
+      if (r[0] === 'Раздел') break;
+      if (r.length >= 2) meta[r[0]] = r[1];
+    }
+    if (!meta['Задание'] || i >= rows.length) throw new Error('это не файл результата NetLab');
+    const items = [];
+    for (i++; i < rows.length; i++) {
+      const r = rows[i];
+      if (r.length < 4) continue;
+      items.push({ section: r[0], label: r[1], points: Number(r[2]) || 0, ok: /^да$/i.test(r[3]) });
+    }
+    const [got, total] = String(meta['Баллы'] || '').split(/\s+из\s+/).map(Number);
+    return { task: meta['Задание'], student: meta['Ученик'] || '', date: meta['Дата'] || '', percent: Number(String(meta['Процент'] || '0').replace(',', '.')) || 0, got: got || 0, total: total || 0, items };
+  }
+
+  /** Сводка по нескольким результатам: ученики × пункты, средний процент, доля решивших каждый пункт. */
+  function classSummary(results) {
+    const keys = [];
+    const seen = new Set();
+    for (const r of results) for (const it of r.items) { const k = it.section + ' / ' + it.label; if (!seen.has(k)) { seen.add(k); keys.push({ key: k, section: it.section, label: it.label }); } }
+    const rows = results.map((r) => ({ student: r.student || '(без имени)', task: r.task, date: r.date, percent: r.percent, got: r.got, total: r.total, marks: new Map(r.items.map((it) => [it.section + ' / ' + it.label, it.ok])) }))
+      .sort((a, b) => b.percent - a.percent || a.student.localeCompare(b.student, 'ru'));
+    const solved = keys.map((k) => { const have = rows.filter((r) => r.marks.has(k.key)); return have.length ? Math.round((have.filter((r) => r.marks.get(k.key)).length / have.length) * 100) : 0; });
+    const avg = rows.length ? Math.round((rows.reduce((x, r) => x + r.percent, 0) / rows.length) * 10) / 10 : 0;
+    return { tasks: [...new Set(results.map((r) => r.task))], keys, rows, solved, avg };
+  }
+
+  function summaryCsv(sum) {
+    const q = (x) => '"' + String(x == null ? '' : x).replace(/"/g, '""') + '"';
+    const head = ['Ученик', 'Процент', 'Баллы', 'Дата'].concat(sum.keys.map((k) => k.label));
+    const lines = [head.map(q).join(';')];
+    for (const r of sum.rows) lines.push([r.student, String(r.percent).replace('.', ','), r.got + ' из ' + r.total, r.date].concat(sum.keys.map((k) => (!r.marks.has(k.key) ? '' : r.marks.get(k.key) ? 'да' : 'нет'))).map(q).join(';'));
+    lines.push(['Решили, %', String(sum.avg).replace('.', ','), '', ''].concat(sum.solved.map(String)).map(q).join(';'));
+    return '﻿' + lines.join('\r\n') + '\r\n';
+  }
+
+  NS.activity = { facts, candidates, check, runTests, build, draft, open, snapshot, encode, decode, passHash, subst, pickValues, ensureValues, startAttempt, resultCsv, parseResultCsv, classSummary, summaryCsv, normVar, customItem, HOST_FIELDS, LOCKS, VERSION };
 })(globalThis.NetLab = globalThis.NetLab || {});

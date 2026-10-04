@@ -85,7 +85,7 @@
     /** Создать подынтерфейс, например GigabitEthernet0/0.10. */
     addSubif(portIdx, num, vlan) {
       const port = this.ports[portIdx];
-      if (!port || (port.media !== 'copper' && port.media !== 'fiber')) throw new Error('Подынтерфейс можно создать только на Ethernet-порту');
+      if (!port || (port.media !== 'copper' && port.media !== 'fiber' && port.media !== 'serial')) throw new Error('Подынтерфейс можно создать только на Ethernet- или Serial-порту (Frame Relay)');
       num = Number(num);
       if (!Number.isInteger(num) || num < 1 || num > 4094) throw new Error('Номер подынтерфейса: 1–4094');
       const name = port.name + '.' + num;
@@ -146,7 +146,7 @@
 
     setEncapsulation(i, enc) {
       const p = this.serialPort(i);
-      if (enc !== 'hdlc' && enc !== 'ppp') throw new Error('Инкапсуляция: hdlc или ppp');
+      if (enc !== 'hdlc' && enc !== 'ppp' && enc !== 'frame-relay') throw new Error('Инкапсуляция: hdlc, ppp или frame-relay');
       p.encap = enc;
       this.net.refreshTopology();
     }

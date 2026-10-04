@@ -128,7 +128,7 @@
 
   /* ================= встроенный коммутатор маршрутизатора (HWIC-4ESW, NIM-ES2-4) ================= */
 
-  const ESW = new Set(['HWIC-4ESW', 'NIM-ES2-4']);
+  const ESW = new Set(['HWIC-4ESW', 'NIM-ES2-4', 'ASA5505']);
   const isEsw = (p) => !!p && ESW.has(p.module);
   const Router = NS.deviceTypes.router;
   const RP = Router.prototype;
@@ -191,6 +191,17 @@
     if (!eswOut(this, vlan, i, frame, 'Встроенный коммутатор (' + p.module + '): кадр в VLAN ' + vlan)) this.drop(frame, 'Встроенный коммутатор: в VLAN ' + vlan + ' нет других активных портов');
   };
 
+  // ip address dhcp на interface vlan: запрос адреса, когда поднимается порт этого VLAN
+  const linkChange = RP.onLinkChange;
+  RP.onLinkChange = function (i, up) {
+    linkChange.call(this, i, up);
+    const p = this.ports[i];
+    if (!up || !isEsw(p)) return;
+    for (const f of this.ifaces) {
+      if (f.kind === 'svi' && f.vlan === (p.eswVlan || 1) && f.dhcp && (!this.dhcpc || this.dhcpc.phase === 'failed' || this.dhcpc.phase === 'wait-link')) this.startDhcp(f);
+    }
+  };
+
   if (!RP.setPortAdmin) {
     RP.setPortAdmin = function (i, up) {
       const p = this.ports[i];
@@ -212,10 +223,10 @@
     if (isEsw(p)) p.eswVlan = Number(sp.eswVlan) || 1;
   };
 
-  IpNode.hooks.runtime.push(function () { if (this.type === 'router') this.eswTable = null; });
+  IpNode.hooks.runtime.push(function () { if (this.type === 'router' || this.type === 'asa') this.eswTable = null; });
 
   // загрузка interface vlan маршрутизатора (у коммутатора — своя)
-  IpNode.ifaceKinds.svi = { create: (dev, s) => { const f = dev.addIface(-1, String(s.name), Number(s.vlan), 'svi'); f.adminUp = true; return f; } };
+  IpNode.ifaceKinds.svi = { removable: true, create: (dev, s) => { const f = dev.addIface(-1, String(s.name), Number(s.vlan), 'svi'); f.adminUp = true; return f; } };
 
   /* ---------- команды IOS ---------- */
 

@@ -655,6 +655,7 @@
         h('span', { class: 'sep' }),
         btn('book', 'Примеры', 'Готовые схемы для изучения', () => this.showExamples()),
         btn('task', 'Задание', 'Задания с проверкой: мастер заданий, инструкции, проверка результата', (e) => UI.taskMenu(this, e)),
+        btn('diag', 'Диагностика', 'Почему не работает? Проверка сети. Поиск неисправностей', (e) => UI.diagMenu(this, e)),
         btn('tag', 'Вид', 'Настройки отображения', (e) => this.viewMenu(e)),
         btn('help', 'Справка', 'Как пользоваться NetLab (F1)', () => this.showHelp()));
     },
@@ -674,10 +675,21 @@
         { label: (s.showIps ? '☑ ' : '☐ ') + 'IP-адреса под устройствами', onClick: () => flip('showIps') },
         { label: (s.autoPorts ? '☑ ' : '☐ ') + 'Кабель: выбирать порт автоматически', onClick: () => flip('autoPorts') },
         { label: (s.showNvram ? '☑ ' : '☐ ') + 'Отмечать несохранённую конфигурацию (NVRAM)', onClick: () => flip('showNvram') },
+        { label: (s.minimap !== false ? '☑ ' : '☐ ') + 'Мини-карта схемы', onClick: () => { s.minimap = s.minimap === false; this.savePrefs(); this.needRender = true; } },
+        { label: 'Найти устройство…', right: 'Ctrl+F', onClick: () => UI.openSearch(this) },
+        { label: ((this.net.env && this.net.env.on) ? '☑ ' : '☐ ') + 'Среда IoT (время суток, погода, пожар)…', onClick: () => UI.envDialog(this) },
+        { label: UI.isRecording && UI.isRecording() ? '■ Остановить запись видео' : '● Записать видео схемы (WebM)…', onClick: () => UI.recordToggle(this) },
         { label: (s.confirmPowerOff ? '☑ ' : '☐ ') + 'Спрашивать перед выключением без сохранения', onClick: () => flip('confirmPowerOff') },
         { label: ((this.net.physical && this.net.physical.enabled) ? '☑ ' : '☐ ') + 'Физические расстояния (длина кабелей, дальность Wi-Fi)…', onClick: () => this.physicalDialog() },
+        { label: ((NS.places && NS.places.on(this.net)) ? '☑ ' : '☐ ') + 'Физическое пространство (город, здание, шкаф)…', onClick: () => UI.placesWindow(this) },
+        { label: (this.net.realTimers ? '☑ ' : '☐ ') + 'Реалистичные таймеры (STP 30 с, сходимость OSPF/EIGRP/RIP)', onClick: () => { this.mutate(() => NS.timers.set(this.net, !this.net.realTimers)); UI.toast(this.net.realTimers ? 'Реалистичные таймеры: порты коммутаторов проходят listening и learning (30 с, PortFast — сразу), маршруты сходятся не мгновенно' : 'Мгновенная сходимость STP и маршрутизации', 'ok', 5000); } },
         { label: 'Многопользовательский режим…', onClick: () => UI.multiuserDialog(this) },
+        { label: UI.lang === 'en' ? 'Язык: Русский (после перезапуска)' : 'Язык: English (после перезапуска)', onClick: () => this.switchLang() },
         DESKTOP ? { label: (s.autoUpdate ? '☑ ' : '☐ ') + 'Проверять обновления при запуске', onClick: () => flip('autoUpdate') } : null,
+        '-',
+        { title: 'Слой на схеме' },
+        { label: (!s.overlay ? '● ' : '○ ') + 'Без слоя', onClick: () => { s.overlay = null; this.savePrefs(); this.needRender = true; } },
+        ...Object.entries(NS.overlay.MODES).map(([k, t]) => ({ label: (s.overlay === k ? '● ' : '○ ') + t, onClick: () => { s.overlay = k; this.savePrefs(); this.needRender = true; } })),
         '-',
         { title: 'Тема' },
         { label: (s.theme === 'auto' ? '● ' : '○ ') + 'Как в системе', onClick: () => this.setTheme('auto') },
@@ -701,7 +713,8 @@
         h('div', { class: 'form', style: { marginTop: '10px' } },
           h('label', null, 'Масштаб, м в единице схемы'), scale, h('label', null, 'Дальность Wi-Fi, м'), wifi, h('label', null, 'Дальность вышки 3G/4G, м'), cell),
         err,
-        h('div', { class: 'hint-box', style: { marginTop: '10px' } }, 'Длина кабеля считается по расстоянию между устройствами на схеме. Предельная длина: медь — ' + L.straight + ' м, оптика — ' + L.fiber + ' м, коаксиал — ' + L.coaxial + ' м, телефонная линия (DSL) — ' + L.phone + ' м, Serial — ' + L.serial + ' м. Слишком длинный кабель не передаёт данные (индикаторы красные, подпись длины выделена). Сетка схемы — 20 единиц.'));
+        h('div', { class: 'hint-box', style: { marginTop: '10px' } }, 'Длина кабеля считается по расстоянию между устройствами на схеме. Предельная длина: медь — ' + L.straight + ' м, оптика — ' + L.fiber + ' м, коаксиал — ' + L.coaxial + ' м, телефонная линия (DSL) — ' + L.phone + ' м, Serial — ' + L.serial + ' м. Слишком длинный кабель не передаёт данные (индикаторы красные, подпись длины выделена). Сетка схемы — 20 единиц. ' +
+          'Точнее — в окне «Физическое пространство» (меню «Вид»): там устройства стоят в городах, зданиях и шкафах, и расстояния берутся оттуда.'));
       const apply = () => {
         try {
           this.mutate(() => NS.physical.setPhysical(this.net, { enabled: on.checked, scale: Number(scale.value), wifi: Number(wifi.value), cell: Number(cell.value) }));
@@ -711,6 +724,13 @@
         } catch (e2) { err.textContent = e2.message; return false; }
       };
       UI.modal({ title: 'Физические расстояния', body, actions: [{ label: 'Отмена' }, { label: 'Применить', primary: true, onClick: apply }], enterAction: apply });
+    },
+
+    /** Сменить язык интерфейса: применяется после перезапуска (страница перезагружается). */
+    switchLang() {
+      UI.setLang(UI.lang === 'en' ? 'ru' : 'en');
+      UI.modal({ title: UI.lang === 'en' ? 'Language' : 'Язык интерфейса', body: h('div', null, 'Язык изменится после перезапуска NetLab'),
+        actions: [{ label: 'Напомнить позже' }, { label: 'Перезапустить сейчас', primary: true, onClick: () => { this.flushAutosave(); location.reload(); return true; } }] });
     },
 
     setTheme(t) {
@@ -1112,21 +1132,27 @@
           h('li', null, 'Bluetooth: программа на смартфоне, ноутбуке или планшете; устройства должны быть рядом на схеме.'),
           h('li', null, 'IoT: умные устройства и платы — категория IoT слева. IoT Monitor управляет устройствами, вкладка «Программирование» платы запускает код, IoX IDE загружает приложения на маршрутизатор.'),
           h('li', null, 'Готовые примеры по каждой теме — кнопка «Примеры».')),
+        h('b', null, 'Новое в 1.4'),
+        h('ul', null,
+          h('li', null, 'Почему не работает? — кнопка «Диагностика»: путь пакета на схеме, место и причина потери, как исправить. Там же — «Проверка сети» и «Поиск неисправностей».'),
+          h('li', null, '«Вид» → «Физическое пространство»: города, здания и шкафы; длина кабелей и дальность Wi-Fi — по физическим координатам. Там же — слои (VLAN, STP, OSPF), реалистичные таймеры и язык интерфейса.'),
+          h('li', null, 'ASA 5505, IPsec на ASA и WebVPN, Frame Relay в облаке Cloud-PT, IP SLA и track, Linux на компьютерах и серверах (ОС в настройках узла), HTTPS с сертификатами.'),
+          h('li', null, '«Программирование» на рабочем столе ПК — Python или JavaScript с requests (REST, RESTCONF) и SSH в стиле netmiko. Python: классы, исключения, срезы, f-строки.'),
+          h('li', null, 'Левая кнопка по фону — выделение рамкой, средняя — перемещение по полю; Ctrl+F — поиск, Ctrl+C / Ctrl+V — копирование с кабелями, шаблоны — правый щелчок.')),
         h('b', null, 'Новое в 1.3'),
         h('ul', null,
           h('li', null, 'Задания с проверкой: кнопка «Задание» → «Мастер заданий» (ответ, инструкции, пункты оценки, таймер). У ученика — панель задания с кнопкой «Проверить».'),
-          h('li', null, 'ASA 5506-X, WLC 2504 и точки LAP, модемы, вышка 3G/4G, сетевой контроллер — в категориях слева; у ASA свой CLI, WLC настраивается во вкладке «Настройка».'),
-          h('li', null, 'Инструмент «Сложный PDU» — на панели слева, сценарии PDU — внизу. «Вид» → «Физические расстояния» и «Многопользовательский режим».'),
-          h('li', null, 'Программы плат — на JavaScript, Python или блоками (вкладка «Программирование»). На IP-телефоне — «Удержать», «Вернуть», «Перевести».')),
+          h('li', null, 'ASA 5506-X, WLC 2504 и точки LAP, модемы, вышка 3G/4G, сетевой контроллер — в категориях слева; у ASA свой CLI, WLC настраивается во вкладке «Настройка».')),
         h('b', null, 'Клавиши'),
         h('ul', null,
           h('li', null, k('V'), ' выбор, ', k('C'), ' кабель, ', k('P'), ' ping, ', k('M'), ' сообщение, ', k('I'), ' инспектор, ', k('N'), ' заметка, ', k('G'), ' фигура, ', k('X'), ' удаление'),
           h('li', null, k('1'), '–', k('9'), ' быстро поставить: ПК, ноутбук, сервер, 2960, 2911, хаб, точка доступа, WRT300N, 3560'),
           h('li', null, k('Del'), ' удалить выделенное, ', k('Ctrl+D'), ' дублировать, ', k('Ctrl+A'), ' выделить всё, ', k('Esc'), ' отмена'),
+          h('li', null, k('Ctrl+F'), ' найти устройство (имя, IP, MAC, VLAN), ', k('Ctrl+C'), ' / ', k('Ctrl+V'), ' копировать и вставить устройства вместе с кабелями; шаблоны — правый щелчок'),
           h('li', null, k('Ctrl+Z'), ' / ', k('Ctrl+Y'), ' отменить / повторить, ', k('Ctrl+S'), ' сохранить, ', k('F'), ' показать всю схему'),
           h('li', null, 'В консоли IOS: ', k('?'), ' подсказка, ', k('Tab'), ' дописать команду, ', k('Ctrl+Z'), ' выйти в привилегированный режим, ', k('Ctrl+C'), ' прервать'),
           h('li', null, 'В симуляции: ', k('Пробел'), ' пуск/пауза, ', k('→'), ' шаг'),
-          h('li', null, 'Shift+перетаскивание по фону — выделение рамкой; колесо мыши — масштаб.')),
+          h('li', null, 'Левая кнопка по фону — выделение рамкой (с Shift — добавить к выделенному); средняя кнопка (колесо) — перемещение по полю, также Alt + левая кнопка; колесо мыши — масштаб.')),
         h('b', null, 'Что сделано надёжнее, чем в Packet Tracer'),
         h('ul', null,
           h('li', null, 'Сообщение или письмо нескольким получателям доставляется каждому отдельно, с отчётом по каждому адресу, повторами и понятной причиной ошибки; дубликатов не бывает.'),
@@ -1186,5 +1212,5 @@
   };
 
   NS.app = App;
-  window.addEventListener('DOMContentLoaded', () => { App.init(); if (NS.muSetup) NS.muSetup(App); if (NS.taskSetup) NS.taskSetup(App); });
+  window.addEventListener('DOMContentLoaded', () => { App.init(); if (NS.muSetup) NS.muSetup(App); if (NS.taskSetup) NS.taskSetup(App); if (NS.navSetup) NS.navSetup(App); });
 })(globalThis.NetLab = globalThis.NetLab || {});

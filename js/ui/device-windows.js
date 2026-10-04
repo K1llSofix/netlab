@@ -27,6 +27,7 @@
   }
 
   function tabsFor(app, dev) {
+    for (const fn of UI.extraTabsFor || []) { const t = fn(app, dev); if (t) return t; }
     const id = dev.id;
     const phys = DW.physicalTab(app, id);
     const cfg = DW.configTab(app, id);
@@ -81,7 +82,8 @@
       app.deskState(id).app = tabId === 'mail' ? 'messages' : 'email';
       tabId = 'desktop';
     }
-    const tabs = tabsFor(app, dev);
+    // вкладки, скрытые заданием (например, CLI), не показываются
+    const tabs = tabsFor(app, dev).filter((t) => !(UI.tabHidden && UI.tabHidden(dev, t.id)));
     const wantTab = tabId && tabs.find((t) => t.id === tabId) ? tabId : undefined;
     const size = SIZES[dev.type] || [720, 560];
     const existed = !!UI.windows.get('dev:' + id);
@@ -93,7 +95,7 @@
       width: size[0],
       height: size[1],
       tabs,
-      initialTab: wantTab || (existed ? undefined : app.uiPref('tab:' + dev.type, defaultTab(dev))),
+      initialTab: wantTab || (existed ? undefined : [app.uiPref('tab:' + dev.type, defaultTab(dev)), defaultTab(dev), 'config'].find((x) => tabs.some((t) => t.id === x)) || (tabs[0] && tabs[0].id)),
     });
     if (!win.tabWatch) {
       win.tabWatch = true;

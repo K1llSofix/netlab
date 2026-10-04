@@ -10,6 +10,7 @@
   P.PORT_DNS = 53;
   P.PORT_MAIL = 7777; // «Сообщения» — прямая доставка между компьютерами
   P.PORT_HTTP = 80;
+  P.PORT_HTTPS = 443;
   P.PORT_SMTP = 25;
   P.PORT_POP3 = 110;
   P.PORT_TELNET = 23;
@@ -49,6 +50,7 @@
     DNS: { label: 'DNS', color: '#14b8a6' },
     TCP: { label: 'TCP', color: '#0ea5e9' },
     HTTP: { label: 'HTTP', color: '#10b981' },
+    HTTPS: { label: 'HTTPS', color: '#059669' },
     SMTP: { label: 'SMTP', color: '#f97316' },
     POP3: { label: 'POP3', color: '#eab308' },
     TELNET: { label: 'Telnet', color: '#8b5cf6' },
@@ -59,7 +61,7 @@
     OTHER: { label: 'Другое', color: '#64748b' },
   };
 
-  const TCP_APPS = { 80: 'HTTP', 25: 'SMTP', 110: 'POP3', 23: 'TELNET', 22: 'SSH' };
+  const TCP_APPS = { 80: 'HTTP', 443: 'HTTPS', 25: 'SMTP', 110: 'POP3', 23: 'TELNET', 22: 'SSH' };
 
   /* ---------- расширения: новые протоколы описывают себя сами ---------- */
 
@@ -140,8 +142,10 @@
 
   function tcpAppSummary(seg) {
     const d = seg.data || {};
-    if (d.http === 'GET') return 'HTTP GET ' + (d.path || '/');
+    const tls = seg.dport === 443 || seg.sport === 443;
+    if (tls && d.http) return 'HTTPS: данные зашифрованы TLS (внутри — ' + (d.http === 'RESP' ? 'ответ ' + d.status : d.http + ' ' + (d.path || '/')) + ')';
     if (d.http === 'RESP') return 'HTTP ' + d.status + ' ' + (d.reason || '');
+    if (d.http) return 'HTTP ' + d.http + ' ' + (d.path || '/');
     if (d.smtp === 'SEND') return 'SMTP: письмо для ' + (d.to || []).length + ' получател' + ((d.to || []).length === 1 ? 'я' : 'ей');
     if (d.smtp === 'RESULT') return 'SMTP: отчёт о доставке';
     if (d.pop3 === 'RETR') return 'POP3: запрос писем ' + (d.user || '');
@@ -276,7 +280,10 @@
           const d = s.data;
           const kind = P.classify(f);
           const fields = [];
-          if (d.http === 'GET') fields.push(['Запрос', 'GET ' + d.path], ['Узел', d.host || '']);
+          if (d.http === 'GET' || d.http === 'POST') fields.push(['Запрос', d.http + ' ' + d.path], ['Узел', d.host || '']);
+          if (d.form) fields.push(['Форма', Object.keys(d.form).map((k) => k + '=' + (/pass/i.test(k) ? '••••' : d.form[k])).join('&')]);
+          if (d.cookie) fields.push(['Cookie', d.cookie]);
+          if (d.setCookie) fields.push(['Set-Cookie', d.setCookie]);
           else if (d.http === 'RESP') fields.push(['Ответ', d.status + ' ' + (d.reason || '')], ['Размер страницы', String((d.body || '').length) + ' символов']);
           else if (d.smtp === 'SEND') fields.push(['От', d.from || ''], ['Кому', (d.to || []).join(', ')], ['Тема', d.subject || '']);
           else if (d.smtp === 'RESULT') for (const r of d.results || []) fields.push([r.to, (r.ok ? 'доставлено' : 'ошибка: ') + (r.ok ? '' : r.text)]);

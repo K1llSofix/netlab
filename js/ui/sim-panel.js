@@ -39,6 +39,7 @@
       this.playBtn = h('button', { class: 'btn outline', onClick: () => this.togglePlay() });
       this.stepBtn = h('button', { class: 'btn outline', title: 'Следующий шаг (→)', onClick: () => this.step() }, UI.icon('step'), 'Шаг');
       const resetBtn = h('button', { class: 'btn outline', title: 'Сбросить: удалить пакеты в пути и очистить журнал', onClick: () => this.reset() }, UI.icon('reset'), 'Сброс');
+      const pcapBtn = h('button', { class: 'btn outline', title: 'Сохранить все кадры журнала в .pcap для Wireshark', onClick: () => UI.exportSimPcap && UI.exportSimPcap(this.app) }, UI.icon('download'), '.pcap');
       const speed = h('input', { type: 'range', min: 0, max: 6, step: 1, value: String(Math.round(Math.log2(this.speed) + 2)) });
       const speedVal = h('span', { style: { minWidth: '38px', textAlign: 'right' } });
       const setSpeed = () => {
@@ -65,7 +66,7 @@
       el.append(
         h('div', { class: 'sim-head' },
           h('h3', null, 'Симуляция', this.timeEl),
-          h('div', { class: 'sim-controls' }, this.playBtn, this.stepBtn, h('div', { class: 'grow' }), resetBtn),
+          h('div', { class: 'sim-controls' }, this.playBtn, this.stepBtn, h('div', { class: 'grow' }), pcapBtn, resetBtn),
           h('div', { class: 'speed' }, 'Скорость', speed, speedVal)),
         chips,
         this.list);

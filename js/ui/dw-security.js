@@ -42,7 +42,7 @@
   UI.deviceIcon = function (type, model) { return type === 'asa' ? ASA_ICON : baseIcon(type, model); };
   UI.DEVICE_TYPES.push({ type: 'asa', label: 'Межсетевой экран', short: 'ASA' });
   const wan = UI.DEVICE_CATEGORIES.findIndex((c) => c.id === 'wan');
-  UI.DEVICE_CATEGORIES.splice(wan >= 0 ? wan : UI.DEVICE_CATEGORIES.length, 0, { id: 'security', label: 'Безопасность', icon: 'asa', models: ['ASA5506'] });
+  UI.DEVICE_CATEGORIES.splice(wan >= 0 ? wan : UI.DEVICE_CATEGORIES.length, 0, { id: 'security', label: 'Безопасность', icon: 'asa', models: ['ASA5506', 'ASA5505'] });
 
   /* ================= служба AAA на сервере ================= */
 
@@ -272,13 +272,18 @@
     };
   }]);
 
-  /* ================= ASA 5506-X ================= */
+  /* ================= ASA 5506-X и ASA 5505 ================= */
+
+  const isSw = (p) => !!p && p.module === 'ASA5505';
+  const hasSw = (dev) => dev.ports.some(isSw);
+  const asaIfs = (dev) => dev.ifaces.filter((f) => f.kind === 'phys' || f.kind === 'svi');
 
   function asaConfig(app, id, st0) {
     return (body) => {
       const dev = app.net.getDevice(id);
-      const items = [{ group: 'GLOBAL' }, { id: 'global', label: 'Настройки' }, { id: 'routes', label: 'Маршруты' }, { group: 'ПОЛИТИКА' }, { id: 'nat', label: 'NAT' }, { id: 'acl', label: 'Списки доступа' }, { id: 'inspect', label: 'Инспекция' }, { id: 'dhcpd', label: 'DHCP-сервер' }, { group: 'INTERFACE' }];
-      for (const f of dev.ifaces) if (f.kind === 'phys') items.push({ id: 'if:' + f.name, label: UI.shortIf(f.name) + (f.nameif ? ' · ' + f.nameif : ''), title: f.name });
+      const items = [{ group: 'GLOBAL' }, { id: 'global', label: 'Настройки' }, { id: 'routes', label: 'Маршруты' }, { group: 'ПОЛИТИКА' }, { id: 'nat', label: 'NAT' }, { id: 'acl', label: 'Списки доступа' }, { id: 'inspect', label: 'Инспекция' }, { id: 'dhcpd', label: 'DHCP-сервер' }, { id: 'webvpn', label: 'WebVPN' }, { group: 'INTERFACE' }];
+      if (hasSw(dev)) items.push({ id: 'switch', label: 'Порты и VLAN' });
+      for (const f of asaIfs(dev)) items.push({ id: 'if:' + f.name, label: UI.shortIf(f.name) + (f.nameif ? ' · ' + f.nameif : ''), title: f.name });
       let live = null;
       DW.sidebarLayout(body, items, st0, 'sec', (sec, box) => {
         const d = app.net.getDevice(id);
@@ -289,6 +294,8 @@
         else if (sec === 'acl') asaAcl(app, d, box);
         else if (sec === 'inspect') asaInspect(app, d, box);
         else if (sec === 'dhcpd') asaDhcp(app, d, box);
+        else if (sec === 'switch') live = asaSwitch(app, d, box);
+        else if (sec === 'webvpn') live = asaWebvpn(app, d, box);
         else if (sec.startsWith('if:')) { const f = d.ifaceByName(sec.slice(3)); if (f) asaIface(app, d, f, box); }
       }, DW.iosLogPanel(app, dev));
       return () => { if (live) live(); };
@@ -298,21 +305,115 @@
   const nameifs = (dev) => dev.ifaces.filter((f) => f.nameif).map((f) => f.nameif);
 
   function asaGlobal(app, dev, box) {
-    return page(app, dev, box, 'Cisco ASA 5506-X', (run) => {
+    return page(app, dev, box, NS.models.get(dev.model).title.replace('Межсетевой экран ', ''), (run) => {
       const hn = inp('', 180, dev.ios.hostname);
       DW.commitOnChange(hn, () => run(['hostname ' + hn.value.trim()]));
       const en = h('input', { class: 'inp', type: 'password', placeholder: dev.hasEnablePassword() ? '(задан)' : 'не задан', style: { width: '180px' } });
       DW.commitOnChange(en, () => run([en.value ? 'enable password ' + en.value : 'no enable password']));
       box.append(DW.form(lbl('Hostname'), hn, lbl('enable password'), en));
       const t = h('div');
-      box.append(t, hint('ASA пропускает трафик с интерфейса с более высоким уровнем безопасности (inside, 100) на более низкий (outside, 0) и запоминает соединение — ответы проходят обратно. В обратную сторону нужен список доступа (access-group). ICMP запоминается, только если в политике включён inspect icmp — иначе ping изнутри наружу не получит ответа. Интерфейсы ASA по умолчанию выключены: nameif, IP-адрес и no shutdown.'));
+      box.append(t, hint('ASA пропускает трафик с интерфейса с более высоким уровнем безопасности (inside, 100) на более низкий (outside, 0) и запоминает соединение — ответы проходят обратно. В обратную сторону нужен список доступа (access-group). ICMP запоминается, только если в политике включён inspect icmp — иначе ping изнутри наружу не получит ответа. ' + (hasSw(dev)
+        ? 'У ASA 5505 порты Ethernet0/0–0/7 — встроенный коммутатор: порт относят к VLAN (switchport access vlan), а nameif и адрес задают на interface vlan N. Заводская настройка: Ethernet0/0 — VLAN 2 (outside, адрес по DHCP), остальные — VLAN 1 (inside, 192.168.1.1, DHCP-сервер).'
+        : 'Интерфейсы ASA по умолчанию выключены: nameif, IP-адрес и no shutdown.')));
       return () => {
         const d = app.net.getDevice(dev.id);
         const r = d.asaRt;
         UI.clear(t);
-        t.append(tbl(['Интерфейс', 'nameif', 'Уровень', 'Адрес', 'Состояние'], d.ifaces.filter((f) => f.kind === 'phys' && (f.nameif || f.ip != null)).map((f) => h('tr', null, h('td', null, f.name), h('td', null, f.nameif || '—'), h('td', null, f.nameif ? String(NS.asa.secOf(f)) : '—'), h('td', { class: 'mono' }, f.ip != null ? U.cidr(f.ip, f.mask) : f.dhcp ? 'DHCP…' : '—'), h('td', null, st(d.ifaceUp(f), d.ifaceUp(f) ? 'up' : 'down')))), 'Интерфейсы не настроены'),
+        t.append(tbl(['Интерфейс', 'nameif', 'Уровень', 'Адрес', 'Состояние'], asaIfs(d).filter((f) => f.nameif || f.ip != null || f.dhcp).map((f) => h('tr', null, h('td', null, f.name), h('td', null, f.nameif || '—'), h('td', null, f.nameif ? String(NS.asa.secOf(f)) : '—'), h('td', { class: 'mono' }, f.ip != null ? U.cidr(f.ip, f.mask) : f.dhcp ? 'DHCP…' : '—'), h('td', null, st(d.ifaceUp(f), d.ifaceUp(f) ? 'up' : 'down')))), 'Интерфейсы не настроены'),
           h('div', { class: 'muted', style: { marginTop: '6px' } }, 'Соединений (conn): ' + (r ? r.conns.size : 0) + ' · трансляций (xlate): ' + (r ? r.xlate.size : 0)));
       };
+    });
+  }
+
+  /** ASA 5505: порты встроенного коммутатора и интерфейсы VLAN. */
+  function asaSwitch(app, dev, box) {
+    return page(app, dev, box, 'Порты встроенного коммутатора и VLAN', (run0) => {
+      const t = h('div');
+      const links = [];
+      const run = (cmds) => { run0(cmds); draw(); };
+      const vI = h('input', { class: 'inp', type: 'number', min: 1, max: 4090, placeholder: 'номер', style: { width: '90px' } });
+      const draw = () => {
+        const d = app.net.getDevice(dev.id);
+        UI.clear(t);
+        links.length = 0;
+        const svis = d.ifaces.filter((f) => f.kind === 'svi');
+        const vlans = [...new Set(svis.map((f) => f.vlan).concat(d.ports.filter(isSw).map((p) => p.eswVlan || 1)))].sort((a, b) => a - b);
+        const vName = (v) => { const f = svis.find((x) => x.vlan === v); return 'VLAN ' + v + (f && f.nameif ? ' · ' + f.nameif : ''); };
+        t.append(tbl(['Порт', 'Подключено', 'VLAN', 'Порт', 'Связь'], d.ports.map((p, j) => {
+          if (!isSw(p)) return null;
+          const ln = h('span');
+          links.push([j, ln]);
+          return h('tr', null, h('td', null, p.name), h('td', null, DW.peerText(app.net, d, j)),
+            h('td', null, DW.select(vlans.map((v) => [String(v), vName(v)]), String(p.eswVlan || 1), (v) => run(['interface ' + p.name, 'switchport access vlan ' + v]), { style: { width: 'auto' } })),
+            h('td', null, UI.toggle(p.adminUp ? 'включён' : 'shutdown', p.adminUp, (on) => run(['interface ' + p.name, on ? 'no shutdown' : 'shutdown']))), h('td', null, ln));
+        }).filter(Boolean), ''),
+        DW.section('Интерфейсы VLAN'),
+        tbl(['Интерфейс', 'nameif', 'Уровень', 'Адрес', ''], svis.map((f) => h('tr', null, h('td', null, f.name), h('td', null, f.nameif || '—'), h('td', null, f.nameif ? String(NS.asa.secOf(f)) : '—'),
+          h('td', { class: 'mono' }, f.ip != null ? U.cidr(f.ip, f.mask) : f.dhcp ? 'DHCP…' : '—'), h('td', null, delBtn(() => run(['no interface vlan ' + f.vlan]))))), 'Интерфейсов VLAN нет'));
+        live();
+      };
+      const live = () => {
+        const d = app.net.getDevice(dev.id);
+        for (const [j, ln] of links) { const up = app.net.isPortOperational(d, j); UI.clear(ln); ln.append(st(up, up ? 'up' : 'down')); }
+      };
+      box.append(t, h('div', { class: 'row', style: { marginTop: '10px' } }, h('span', null, 'Новый интерфейс VLAN:'), vI,
+        h('button', { class: 'btn primary small', onClick: () => { if (vI.value) run(['interface vlan ' + vI.value]); vI.value = ''; } }, 'Создать')),
+      hint('Порт можно перевести в любой VLAN; чтобы VLAN стал сетью, создайте interface vlan N и задайте на нём nameif, security-level и адрес (раздел слева). Проверка в CLI: show switch vlan, show interface ip brief.'));
+      draw();
+      return live;
+    });
+  }
+
+  /** WebVPN (clientless SSL VPN): портал на интерфейсах, закладки, политика по умолчанию, сеансы. */
+  function asaWebvpn(app, dev, box) {
+    return page(app, dev, box, 'WebVPN — доступ к внутренним сайтам через браузер', (run0) => {
+      const t = h('div');
+      const sess = h('div');
+      const run = (cmds) => { run0(cmds); draw(); };
+      const lI = inp('СПИСОК', 110, 'INTRANET');
+      const nI = inp('название', 170);
+      const uI = inp('http://192.168.1.100', 190);
+      const draw = () => {
+        const d = app.net.getDevice(dev.id);
+        const w = d.webvpn || { ifs: [], lists: {}, gps: {}, userGp: {}, tgs: {} };
+        UI.clear(t);
+        const tg = w.tgs.DefaultWEBVPNGroup;
+        const gpName = (tg && tg.gp) || 'DfltGrpPolicy';
+        const gp = w.gps[gpName];
+        const lists = Object.keys(w.lists);
+        const setList = (v) => {
+          const name = tg && tg.gp ? tg.gp : 'WEBVPN';
+          run(['group-policy ' + name + ' internal', 'group-policy ' + name + ' attributes', 'vpn-tunnel-protocol ssl-clientless', 'webvpn', v ? 'url-list value ' + v : 'url-list none', 'exit',
+            'tunnel-group DefaultWEBVPNGroup general-attributes', 'default-group-policy ' + name, 'exit']);
+        };
+        t.append(DW.form(...d.ifaces.filter((f) => f.nameif).flatMap((f) => [lbl('Портал на ' + f.nameif), UI.toggle(w.ifs.includes(f.nameif.toLowerCase()) ? 'https://' + (f.ip != null ? ip(f.ip) : '…') : 'выключен', w.ifs.includes(f.nameif.toLowerCase()),
+          (on) => run(['webvpn', (on ? '' : 'no ') + 'enable ' + f.nameif, 'exit']))]),
+          lbl('Закладки для всех'), DW.select([['', '— нет —']].concat(lists.map((k) => [k, k])), (gp && gp.urlList) || '', setList, { style: { width: 'auto' } })),
+        h('div', { class: 'muted', style: { marginTop: '4px' } }, 'Политика по умолчанию (tunnel-group DefaultWEBVPNGroup): ' + gpName),
+        DW.section('Закладки (url-list)'),
+        tbl(['Список', 'Название', 'Адрес', ''], Object.entries(w.lists).flatMap(([k, l]) => l.map((b) => h('tr', null, h('td', null, k), h('td', null, b.name), h('td', { class: 'mono' }, b.url),
+          h('td', null, delBtn(() => run(['no url-list ' + k + ' "' + b.name + '" ' + b.url])))))), 'Закладок нет'),
+        h('div', { class: 'row', style: { marginTop: '6px', flexWrap: 'wrap' } }, lI, nI, uI, h('button', { class: 'btn primary small', onClick: () => {
+          const u = uI.value.trim();
+          if (!lI.value.trim() || !nI.value.trim() || !u) return;
+          run(['url-list ' + lI.value.trim() + ' "' + nI.value.trim() + '" ' + (/^https?:\/\//i.test(u) ? u : 'http://' + u)]);
+          nI.value = '';
+          uI.value = '';
+        } }, 'Добавить')));
+        live();
+      };
+      const live = () => {
+        const d = app.net.getDevice(dev.id);
+        UI.clear(sess);
+        const list = NS.asaWebvpn ? NS.asaWebvpn.sessions(d) : [];
+        sess.append(tbl(['Пользователь', 'Откуда', 'Политика', 'Время'], list.map((x) => h('tr', null, h('td', null, x.user), h('td', { class: 'mono' }, ip(x.ip)), h('td', null, x.gp),
+          h('td', null, Math.floor((d.net.time - x.since) / 100) + ' с'))), 'Активных сеансов нет'));
+      };
+      box.append(t, DW.section('Сеансы (show vpn-sessiondb webvpn)'), sess,
+        hint('Пользователь снаружи открывает в браузере https://адрес-outside, входит под учётной записью ASA (username … password …) и видит портал с закладками; внутренние сайты ASA открывает сам и показывает через портал. ' +
+          'CLI: webvpn → enable outside; url-list INTRANET "Портал" http://192.168.1.100; group-policy WEB internal; group-policy WEB attributes → vpn-tunnel-protocol ssl-clientless → webvpn → url-list value INTRANET; tunnel-group DefaultWEBVPNGroup general-attributes → default-group-policy WEB.'));
+      draw();
+      return live;
     });
   }
 

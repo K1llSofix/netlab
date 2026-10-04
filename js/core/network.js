@@ -369,7 +369,7 @@
       const nets = (ap) => wlansOf(ap).filter((w) => w.ssid === cfg.ssid);
       const same = this.accessPoints().filter((ap) => nets(ap).length);
       if (!same.length) return { ap: null, reason: 'Сеть «' + cfg.ssid + '» не найдена' };
-      const near = same.filter((ap) => Math.hypot(ap.x - dev.x, ap.y - dev.y) <= this.wifiRange());
+      const near = same.filter((ap) => this.devDistance(ap, dev) <= this.wifiRange());
       if (!near.length) return { ap: null, reason: 'Точка доступа «' + cfg.ssid + '» слишком далеко' };
       const sec = near.flatMap((ap) => nets(ap).map((w) => ({ ap, w }))).filter((x) => (x.w.security || 'open') === (cfg.security || 'open'));
       if (!sec.length) return { ap: null, reason: 'Тип защиты не совпадает с точкой доступа' };
@@ -396,7 +396,7 @@
     /** Точки доступа в радиусе действия устройства (для списка сетей). */
     scanWifi(dev) {
       return this.accessPoints()
-        .map((ap) => ({ ap, dist: Math.hypot(ap.x - dev.x, ap.y - dev.y) }))
+        .map((ap) => ({ ap, dist: this.devDistance(ap, dev) }))
         .filter((x) => x.dist <= this.wifiRange())
         .sort((a, b) => a.dist - b.dist)
         .flatMap((x) => wlansOf(x.ap).map((w) => ({ ssid: w.ssid, security: w.security || 'open', channel: w.channel || x.ap.wifi.channel || 6, signal: Math.max(1, Math.round(100 - (x.dist / this.wifiRange()) * 80)), ap: x.ap })));
@@ -413,7 +413,7 @@
         let best = null;
         let bestD = Infinity;
         for (const ap of cfg.ssid ? aps : []) {
-          const dist = Math.hypot(ap.x - d.x, ap.y - d.y);
+          const dist = this.devDistance(ap, d);
           if (dist > this.wifiRange() || dist >= bestD) continue;
           for (const w of wlansOf(ap)) {
             if (w.ssid !== cfg.ssid) continue;
@@ -429,7 +429,7 @@
         if (!best && d.cellular) {
           for (const t of aps) {
             if (t.type !== 'celltower') continue;
-            const dist = Math.hypot(t.x - d.x, t.y - d.y);
+            const dist = this.devDistance(t, d);
             if (dist <= this.cellRange() && dist < bestD) { best = t; bestD = dist; }
           }
         }
@@ -453,6 +453,9 @@
     }
 
     /** Дальность Wi-Fi и вышки 3G/4G в единицах схемы (модуль физических расстояний может пересчитать из метров). */
+    /** Расстояние между устройствами для радиосвязи (в единицах схемы; в физическом пространстве — в метрах). */
+    devDistance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
     wifiRange() { return WIFI_RANGE; }
     cellRange() { return CELL_RANGE; }
 

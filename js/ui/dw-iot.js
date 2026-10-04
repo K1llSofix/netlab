@@ -172,6 +172,10 @@
       const m = ev.data || {};
       const d = app.net.getDevice(id);
       if (!d) { stopProgram(id, 'плата удалена'); return; }
+      if (m.type === 'req') {
+        NS.automation.handle(d, m.kind, m.args, (e, res) => { try { worker.postMessage(e ? { type: 'res', id: m.id, ok: false, error: e.message } : { type: 'res', id: m.id, ok: true, result: res }); } catch (x) { /* поток остановлен */ } });
+        return;
+      }
       if (m.type === 'write') { I.write(d, m.pin, m.value); app.needRender = true; } else if (m.type === 'log' || m.type === 'error') {
         logs.push({ kind: m.type === 'error' ? 'err' : 'out', text: m.text });
         if (logs.length > 400) logs.splice(0, logs.length - 400);
@@ -180,7 +184,7 @@
     };
     worker.onerror = (e) => { logs.push({ kind: 'err', text: 'Ошибка потока: ' + (e.message || e) }); stopProgram(id); };
     const rp = runnable(I.program(dev));
-    worker.postMessage({ type: 'run', code: rp.code, lang: rp.lang, inputs: I.inputs(dev) });
+    worker.postMessage({ type: 'run', code: rp.code, lang: rp.lang, inputs: I.inputs(dev), net: dev.type === 'sbc' });
     onChange();
   }
 
@@ -257,7 +261,7 @@
           tpl.append(h('option', { value: '' }, l === 'blocks' ? 'Шаблоны — для кода' : 'Шаблоны…'), ...tplList().map((t) => h('option', { value: t[0] }, t[1])));
           langNote.textContent = l === 'python' ? 'Python · main() или setup()/loop() · Ctrl+Enter — запуск' : l === 'blocks' ? 'Блоки · собираются в JavaScript' : 'JavaScript · setup() и loop() · Ctrl+Enter — запуск';
           sideHint.textContent = l === 'python'
-            ? 'from gpio import * · pinMode(0, OUT) · digitalWrite(0, HIGH) · digitalRead(1) · analogRead(A0) · analogWrite(2, 512) · sleep(0.5) / delay(500) · print(…). Поддерживается основное подмножество Python: def, if/elif/else, while, for … in range(), списки, f-строки.'
+            ? 'from gpio import * · pinMode(0, OUT) · digitalWrite(0, HIGH) · digitalRead(1) · analogRead(A0) · analogWrite(2, 512) · sleep(0.5) / delay(500) · print(…). Поддерживается основное подмножество Python: def и class (наследование, super()), if/elif/else, while, for … in range(), try/except/raise, списки, словари, срезы, f-строки и %, lambda, методы строк и списков.'
             : l === 'blocks' ? 'Соберите программу из блоков: «При запуске» выполняется один раз, «Повторять» — по кругу. Ниже — код, который получится; его можно перенести в редактор JavaScript.'
               : 'pinMode(0, OUTPUT); digitalWrite(0, HIGH); digitalRead(1); analogRead(A0); analogWrite(2, 512); delay(500); Serial.println("…"). Программа работает в отдельном потоке без доступа к сети и файлам.';
           if (l === 'blocks') {

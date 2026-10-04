@@ -1,0 +1,68 @@
+# Тесты и сборка NetLab для Windows, macOS и Linux.
+# Push в main / pull request — тесты и сборка без публикации (установщики — в артефактах запуска).
+# Тег v* (например v1.4.0) — сборка и загрузка установщиков в релиз GitHub.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  dist:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: --win
+          - os: macos-latest
+            target: --mac
+          - os: ubuntu-latest
+            target: --linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Сборка
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # без сертификата Apple: сборка macOS не подписывается
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then PUBLISH=always; else PUBLISH=never; fi
+          npx electron-builder ${{ matrix.target }} --publish "$PUBLISH"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netlab-${{ runner.os }}
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            dist/*.AppImage
+            dist/*.deb
+            dist/latest*.yml
+          if-no-files-found: ignore
+          retention-days: 14

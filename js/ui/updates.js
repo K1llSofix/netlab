@@ -75,7 +75,7 @@
       when ? h('div', { class: 'muted', style: { marginBottom: '8px' } }, 'Выпущена ' + when) : null,
       notesEl(ev.notes) ? h('div', null, h('div', { class: 'upd-h' }, 'Что нового'), notesEl(ev.notes)) : null,
       ev.portable
-        ? h('div', { class: 'hint-box', style: { marginTop: '10px' } }, 'У вас версия без установки (portable). Новый файл скачается в браузере — запустите его вместо старого. Схемы и автосохранение сохранятся.')
+        ? h('div', { class: 'hint-box', style: { marginTop: '10px' } }, ev.deb ? 'Откроется страница выпуска: скачайте новый пакет .deb и установите его (sudo apt install ./NetLab-….deb). Схемы и автосохранение сохранятся.' : ev.mac ? 'Откроется страница выпуска: скачайте файл .dmg для вашего Mac (Apple Silicon — arm64, Intel — x64) и перетащите NetLab в «Программы». Схемы и автосохранение сохранятся.' : 'У вас версия без установки (portable). Новый файл скачается в браузере — запустите его вместо старого. Схемы и автосохранение сохранятся.')
         : h('div', { class: 'hint-box', style: { marginTop: '10px' } }, 'Обновление скачается в фоне — можно продолжать работать. Потом NetLab перезапустится уже в новой версии; схема сохранится.'));
     const actions = [
       { label: 'Пропустить эту версию', onClick: () => { app.setUiPref('skipVersion', ev.version); badge(); } },

@@ -121,6 +121,8 @@
     pir: (v) => '<rect x="18" y="28" width="28" height="12" rx="2" fill="#16a34a"/><path d="M22 28a10 10 0 0 1 20 0z" fill="#f8fafc" stroke="#64748b"/>' + (v ? '<path d="M12 16a24 24 0 0 1 40 0" stroke="#ef4444" stroke-width="2.4" fill="none"/>' : ''),
   };
 
+  UI.THING_ICONS = THING;
+
   /** Значок устройства по его состоянию (для схемы). */
   UI.deviceIconFor = function (d) {
     if (d.type === 'iot' && d.thing && THING[d.thing.kind]) return THING[d.thing.kind](d.thing.state || {});
@@ -162,7 +164,7 @@
     if (DEV[type]) return DEV[type];
     if (type === 'btspeaker') return speaker(false);
     const spec = model && NS.models.MODELS[model];
-    if (type === 'iot') return THING[(spec && spec.thing) || 'lamp']({ level: 2, speed: 1, value: 22, on: true });
+    if (type === 'iot') return (THING[(spec && spec.thing) || 'lamp'] || THING.lamp)({ level: 2, speed: 1, value: 22, on: true, open: true });
     if (type === 'iotcomp') { const k = spec && spec.comp; return COMP[k] ? COMP[k](k === 'pot' ? 512 : 1) : COMP.led(1); }
     return baseIcon(type, model);
   };

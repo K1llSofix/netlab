@@ -157,10 +157,11 @@
   /* ================= Web Browser ================= */
 
   const HTML_OK = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'B', 'I', 'U', 'EM', 'STRONG', 'BR', 'HR', 'UL', 'OL', 'LI', 'A', 'PRE', 'CODE', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TD', 'TH', 'DIV', 'SPAN', 'CENTER', 'SMALL', 'BIG', 'FONT', 'BLOCKQUOTE', 'DL', 'DT', 'DD', 'SUB', 'SUP']);
-  const HTML_DROP = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'FORM', 'INPUT', 'BUTTON', 'TEXTAREA', 'SELECT', 'LINK', 'META', 'TITLE', 'SVG', 'MATH', 'IMG', 'VIDEO', 'AUDIO']);
+  const HTML_DROP = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'TEXTAREA', 'SELECT', 'LINK', 'META', 'TITLE', 'SVG', 'MATH', 'IMG', 'VIDEO', 'AUDIO']);
 
-  /** Безопасный показ HTML: только разметка текста, никаких скриптов, стилей и внешних ресурсов. */
-  function renderHtml(html, onLink) {
+  /** Безопасный показ HTML: только разметка текста, никаких скриптов, стилей и внешних ресурсов.
+   *  Формы (text / password / hidden / submit) отправляются через onSubmit(action, method, поля). */
+  function renderHtml(html, onLink, onSubmit) {
     const doc = new DOMParser().parseFromString(String(html), 'text/html');
     const root = h('div', { class: 'web-page' });
     const walk = (node, into) => {
@@ -169,6 +170,34 @@
         if (c.nodeType !== 1) continue;
         const tag = c.tagName.toUpperCase();
         if (HTML_DROP.has(tag)) continue;
+        if (tag === 'FORM') {
+          const el = document.createElement('form');
+          el.className = 'web-form';
+          const action = c.getAttribute('action') || '';
+          const method = (c.getAttribute('method') || 'get').toLowerCase();
+          el.addEventListener('submit', (ev) => {
+            ev.preventDefault();
+            const data = {};
+            for (const i of el.querySelectorAll('input')) if (i.name && i.type !== 'submit') data[i.name] = i.value;
+            if (onSubmit) onSubmit(action, method, data);
+            else UI.toast('Формы на этой странице не поддерживаются', 'warn');
+          });
+          walk(c, el);
+          into.appendChild(el);
+          continue;
+        }
+        if (tag === 'INPUT' || tag === 'BUTTON') {
+          const type = (c.getAttribute('type') || (tag === 'BUTTON' ? 'submit' : 'text')).toLowerCase();
+          if (!['text', 'password', 'hidden', 'submit', 'email', 'search'].includes(type)) continue;
+          const el = document.createElement('input');
+          el.type = type === 'email' || type === 'search' ? 'text' : type;
+          el.name = c.getAttribute('name') || '';
+          el.value = tag === 'BUTTON' ? c.textContent.trim() || 'Submit' : c.getAttribute('value') || (type === 'submit' ? 'Submit' : '');
+          el.className = type === 'submit' ? 'btn small primary' : 'inp';
+          if (c.getAttribute('placeholder')) el.placeholder = c.getAttribute('placeholder');
+          into.appendChild(el);
+          continue;
+        }
         if (!HTML_OK.has(tag)) { walk(c, into); continue; }
         const el = document.createElement(tag === 'CENTER' || tag === 'FONT' ? (tag === 'CENTER' ? 'div' : 'span') : tag.toLowerCase());
         if (tag === 'CENTER') el.style.textAlign = 'center';
@@ -198,19 +227,27 @@
     if (/^[a-z]+:/i.test(t)) return null;
     const b = NS.IpNode.parseUrl(base);
     if (!b) return t;
-    return 'http://' + b.host + (b.port ? ':' + b.port : '') + '/' + t.replace(/^\/+/, '');
+    return (b.https ? 'https://' : 'http://') + b.host + (b.port && b.port !== (b.https ? 443 : 80) ? ':' + b.port : '') + '/' + t.replace(/^\/+/, '');
   }
+
+  /** Ключ сайта для cookie и исключений сертификата: узел:порт. */
+  const siteKey = (url) => { const u = NS.IpNode.parseUrl(url); return u ? u.host + ':' + (u.port || 80) : ''; };
 
   function browserApp(app, id, box, st) {
     const b = (st.browser = st.browser || { url: 'http://', history: [], idx: -1, page: null, loading: false, job: null });
+    b.cookies = b.cookies || {}; // сайт → cookie (сеанс WebVPN и т. п.)
+    b.trust = b.trust || {}; // сайты, для которых пользователь принял недоверенный сертификат
     const urlI = h('input', { class: 'inp mono', value: b.url, spellcheck: 'false' });
     const view = h('div', { class: 'web-view' });
     const back = h('button', { class: 'btn icon small', title: 'Назад' }, '◀');
     const fwd = h('button', { class: 'btn icon small', title: 'Вперёд' }, '▶');
-    const go = (url, push) => {
+    const lock = h('span', { class: 'web-lock' });
+    const go = (url, push, insecure, form) => {
       const dev = app.net.getDevice(id);
       if (!dev) return;
       if (!/^https?:\/\//i.test(url) && !/^[a-z]+:/i.test(url)) url = 'http://' + url;
+      const site = siteKey(url);
+      if (insecure) b.trust[site] = true;
       b.url = url;
       urlI.value = url;
       if (b.job && b.job.cancel) b.job.cancel();
@@ -223,9 +260,10 @@
         b.job = null;
         b.loading = false;
         b.page = r;
+        if (r.setCookie != null) { if (r.setCookie) b.cookies[site] = r.setCookie; else delete b.cookies[site]; }
         if (r.url) { b.url = r.url; if (b.history[b.idx]) b.history[b.idx] = r.url; }
         if (b.onUpdate) b.onUpdate();
-      });
+      }, { insecure: !!b.trust[site], form: form || null, cookie: b.cookies[site] || null });
       b.job = job;
     };
     const draw = () => {
@@ -239,8 +277,29 @@
       }
       const p = b.page;
       if (!p) { view.appendChild(h('div', { class: 'web-msg muted' }, 'Введите адрес веб-сервера: http://192.168.1.10 или его DNS-имя.')); return; }
+      const https = /^https:/i.test(b.url);
+      lock.textContent = !https ? '' : p.tls && !p.tls.problem ? '🔒' : '⚠ Не защищено';
+      lock.className = 'web-lock' + (https && (!p.tls || p.tls.problem) ? ' bad' : '');
+      lock.title = p.tls && p.tls.cert ? 'Сертификат: CN=' + p.tls.cert.cn + '\nИздатель: ' + (p.tls.cert.issuer === 'self' ? p.tls.cert.cn + ' (самоподписанный)' : p.tls.cert.issuer) + (p.tls.cert.san && p.tls.cert.san.length ? '\nИмена: ' + p.tls.cert.san.join(', ') : '') + '\n' + p.tls.version + ', ' + p.tls.cipher : '';
+      if (!p.ok && p.cert) {
+        const c = p.tls && p.tls.cert;
+        view.appendChild(h('div', { class: 'web-msg web-cert' }, h('div', { class: 'web-cert-ico' }, '⚠'), h('h2', null, 'Подключение не защищено'),
+          h('p', null, 'Злоумышленники могут пытаться похитить ваши данные с сайта ' + b.url.replace(/^https:\/\//, '').replace(/\/.*$/, '') + '.'),
+          h('p', { class: 'mono small' }, p.cert.code === 'self-signed' ? 'NET::ERR_CERT_AUTHORITY_INVALID' : p.cert.code === 'hostname' ? 'NET::ERR_CERT_COMMON_NAME_INVALID' : p.cert.code === 'expired' ? 'NET::ERR_CERT_DATE_INVALID' : 'NET::ERR_CERT_INVALID'),
+          h('p', null, 'Причина: ' + p.cert.text + '.'),
+          c ? h('p', { class: 'muted small' }, 'Сертификат: CN=' + c.cn + '; издатель: ' + (c.issuer === 'self' ? 'сам сервер' : c.issuer) + (c.san && c.san.length ? '; имена: ' + c.san.join(', ') : '')) : null,
+          h('p', { class: 'muted small' }, c && /^(ASA Temporary|IOS-Self-Signed)/.test(c.cn) ? 'Это самоподписанный сертификат сетевого устройства (ASA / маршрутизатор) — так и бывает у свежего устройства. В учебной сети можно продолжить.' : 'Как исправить: на сервере (Службы → HTTP → Сертификат HTTPS) выпустите сертификат от NetLab Root CA с именем сайта.'),
+          h('div', { class: 'row' }, h('button', { class: 'btn small outline', onClick: () => go(b.url, false, true) }, 'Всё равно перейти (небезопасно)'))));
+        return;
+      }
       if (!p.ok) { view.appendChild(h('div', { class: 'web-msg' }, h('b', null, 'Request Timeout'), h('div', null, p.error))); return; }
-      const r = renderHtml(p.body, (href) => { const u = resolveUrl(b.url, href); if (u) go(u); else UI.toast('Ссылка «' + href + '» не поддерживается', 'warn'); });
+      const r = renderHtml(p.body, (href) => { const u = resolveUrl(b.url, href); if (u) go(u); else UI.toast('Ссылка «' + href + '» не поддерживается', 'warn'); },
+        (action, method, data) => {
+          const u = resolveUrl(b.url, action || b.url.replace(/^https?:\/\/[^/]+/i, '') || '/');
+          if (!u) { UI.toast('Адрес формы «' + action + '» не поддерживается', 'warn'); return; }
+          if (method === 'post') go(u, true, false, data);
+          else go(u + '?' + Object.entries(data).map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v)).join('&'));
+        });
       if (p.status !== 200) view.appendChild(h('div', { class: 'web-code' }, 'HTTP ' + p.status + ' ' + (p.reason || '')));
       view.appendChild(r.el);
     };
@@ -248,7 +307,7 @@
     fwd.addEventListener('click', () => { if (b.idx < b.history.length - 1) { b.idx++; go(b.history[b.idx], false); } });
     DW.onEnter(urlI, () => go(urlI.value.trim()));
     box.classList.add('flush');
-    box.append(h('div', { class: 'web-bar' }, back, fwd, h('span', { class: 'muted' }, 'URL'), urlI,
+    box.append(h('div', { class: 'web-bar' }, back, fwd, h('span', { class: 'muted' }, 'URL'), lock, urlI,
       h('button', { class: 'btn small primary', onClick: () => go(urlI.value.trim()) }, 'Go'),
       h('button', { class: 'btn small outline', onClick: () => { if (b.job && b.job.cancel) b.job.cancel('Остановлено'); b.loading = false; b.job = null; draw(); } }, 'Stop')), view);
     b.onUpdate = () => { if (view.isConnected) draw(); };
@@ -731,7 +790,7 @@
 
   const APPS = [
     { id: 'ipconfig', title: 'IP Configuration', color: '#2563eb', render: ipconfigApp },
-    { id: 'cmd', title: 'Command Prompt', color: '#334155', term: true, render: (app, id, box) => termApp(app, id, box, 'cmd') },
+    { id: 'cmd', title: (d) => (d && d.os === 'linux' ? 'Терминал (bash)' : 'Command Prompt'), color: '#334155', term: true, render: (app, id, box) => termApp(app, id, box, 'cmd') },
     { id: 'terminal', title: 'Terminal', color: '#0f766e', term: (st) => !!st.termOk, render: terminalApp },
     { id: 'browser', title: 'Web Browser', color: '#0284c7', render: browserApp },
     { id: 'wireless', title: 'PC Wireless', color: '#7c3aed', render: wirelessApp },
@@ -767,15 +826,16 @@
           for (const a of APPS) {
             if (a.when && !a.when(dev)) continue;
             const badge = a.id === 'email' ? dev.emailBox.filter((m) => !m.read).length : a.id === 'messages' ? dev.inbox.filter((m) => !m.read).length : 0;
-            grid.appendChild(h('button', { class: 'desk-icon', title: a.title, onClick: () => { st.app = a.id; win.select('desktop'); } },
-              h('span', { class: 'tile', style: { background: a.color } }, glyph(a.id), badge ? h('span', { class: 'badge' }, String(badge)) : null), h('span', { class: 'cap' }, a.title)));
+            const title = typeof a.title === 'function' ? a.title(dev) : a.title;
+            grid.appendChild(h('button', { class: 'desk-icon', title, onClick: () => { st.app = a.id; win.select('desktop'); } },
+              h('span', { class: 'tile', style: { background: a.color } }, glyph(a.id), badge ? h('span', { class: 'badge' }, String(badge)) : null), h('span', { class: 'cap' }, title)));
           }
           body.appendChild(h('div', { class: 'desk' }, grid, dev.power ? null : h('div', { class: 'hint-box warn', style: { margin: '12px' } }, 'Устройство выключено — включите его кнопкой питания на вкладке «Физический вид».')));
           return null;
         }
         const content = h('div', { class: 'desk-app-body' });
         body.appendChild(h('div', { class: 'desk-app' },
-          h('div', { class: 'desk-app-title' }, h('span', { class: 'tile small', style: { background: A.color } }, glyph(A.id)), h('span', null, A.title), h('span', { class: 'grow' }),
+          h('div', { class: 'desk-app-title' }, h('span', { class: 'tile small', style: { background: A.color } }, glyph(A.id)), h('span', null, typeof A.title === 'function' ? A.title(dev) : A.title), h('span', { class: 'grow' }),
             h('button', { class: 'btn icon small', title: 'Закрыть программу', onClick: () => { st.app = null; win.select('desktop'); } }, UI.icon('close'))),
           content));
         try {

@@ -324,6 +324,7 @@
   /** Разобрать адрес «http://узел/страница». */
   IpNode.parseUrl = function (url) {
     let u = String(url || '').trim();
+    const https = /^https:\/\//i.test(u);
     u = u.replace(/^https?:\/\//i, '');
     if (!u) return null;
     const slash = u.indexOf('/');
@@ -333,20 +334,22 @@
     if (m && Number(m[2]) >= 1 && Number(m[2]) <= 65535) { host = m[1]; port = Number(m[2]); }
     let path = slash >= 0 ? u.slice(slash) : '/';
     if (path === '/') path = '/index.html';
-    return host ? { host, path, port } : null;
+    return host ? { host, path, port: port == null && https ? 443 : port, https } : null;
   };
 
-  /** HTTP GET. cb({ok, status, body, error, url}). */
-  IpNode.prototype.httpGet = function (url, cb) {
+  /** HTTP(S) GET. cb({ok, status, body, error, url, tls, cert, setCookie}). opts.insecure — не проверять сертификат HTTPS;
+   *  opts.form — отправить форму (POST), opts.cookie — cookie сайта. */
+  IpNode.prototype.httpGet = function (url, cb, opts) {
     const u = IpNode.parseUrl(url);
     if (!u) { cb({ ok: false, error: 'Введите адрес, например http://192.168.1.10' }); return null; }
-    const hp = u.host + (u.port && u.port !== P.PORT_HTTP ? ':' + u.port : '');
-    return this.tcpRequest(u.host, u.port || P.PORT_HTTP, { http: 'GET', path: u.path, host: u.host }, (d) => d && d.http === 'RESP', (r) => {
+    const hp = u.host + (u.port && u.port !== (u.https ? 443 : P.PORT_HTTP) ? ':' + u.port : '');
+    const scheme = u.https ? 'https://' : 'http://';
+    return this.tcpRequest(u.host, u.port || P.PORT_HTTP, { http: opts && opts.form ? 'POST' : 'GET', path: u.path, host: u.host, form: (opts && opts.form) || undefined, cookie: (opts && opts.cookie) || undefined, https: u.https || undefined, insecure: (opts && opts.insecure) || undefined }, (d) => d && d.http === 'RESP', (r) => {
       if (!r.ok) {
-        cb({ ok: false, error: r.resolve ? 'Не удалось найти узел «' + u.host + '»: ' + r.error : r.error, url: 'http://' + hp + u.path });
+        cb({ ok: false, error: r.resolve ? 'Не удалось найти узел «' + u.host + '»: ' + r.error : r.error, url: scheme + hp + u.path, cert: r.cert, tls: r.tls });
         return;
       }
-      cb({ ok: true, status: r.data.status, reason: r.data.reason, body: String(r.data.body || ''), url: 'http://' + hp + u.path, host: hp });
+      cb({ ok: true, status: r.data.status, reason: r.data.reason, body: String(r.data.body || ''), url: scheme + hp + u.path, host: hp, tls: r.tls, setCookie: r.data.setCookie });
     });
   };
 

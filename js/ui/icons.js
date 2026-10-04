@@ -132,6 +132,7 @@
     power: '<path d="M12 3v8" ' + P + '/><path d="M6.3 7.5a8 8 0 1 0 11.4 0" ' + P + '/>',
     clear: '<path d="M4 20h16M7 16l9-9 3 3-9 9H7z" ' + P + '/>',
     list: '<path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01" ' + P + '/>',
+    diag: '<path d="M2.5 12h4l2.2-5.5 4.3 11 2.3-5.5h6.2" ' + P + '/>',
     inspect: '<circle cx="10" cy="10" r="6.5" ' + P + '/><path d="M15 15l6 6M7 8.5h6M7 11.5h4" ' + P + '/>',
     shape: '<rect x="3" y="5" width="11" height="9" rx="1" ' + P + '/><circle cx="16" cy="15" r="5" ' + P + '/>',
     cycle: '<path d="M12 3v6" ' + P + '/><path d="M6.3 7.5a8 8 0 1 0 11.4 0" ' + P + '/><path d="M16 3.5l1.7 4-4 .6" ' + P + '/>',

@@ -125,7 +125,7 @@
       const o = { name: p.name, mac: p.mac, adminUp: p.adminUp };
       if (p.bandwidth !== 'auto') o.bandwidth = p.bandwidth;
       if (p.duplex !== 'auto') o.duplex = p.duplex;
-      if (p.media === 'serial') { o.clockRate = p.clockRate; o.encap = p.encap; }
+      if (p.media === 'serial') { o.clockRate = p.clockRate; o.encap = p.encap; if (p.frIetf) o.frIetf = true; }
       return o;
     }
 
@@ -162,7 +162,8 @@
       p.duplex = sp.duplex || 'auto';
       if (p.media === 'serial') {
         p.clockRate = Number(sp.clockRate) || null;
-        p.encap = sp.encap === 'ppp' ? 'ppp' : 'hdlc';
+        p.encap = sp.encap === 'ppp' || sp.encap === 'frame-relay' ? sp.encap : 'hdlc';
+        if (sp.frIetf) p.frIetf = true;
       }
     }
 

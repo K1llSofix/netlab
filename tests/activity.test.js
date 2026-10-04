@@ -93,3 +93,80 @@ test('Задание: пункты оценки из ответа, процен�
   const n3 = NL.Network.deserialize(Object.assign({}, saved, { task: { v: 99, secret: 'x' } }));
   assert.equal(n3.task, null);
 });
+
+test('Задание: переменные у каждого ученика, свои пункты, подсказки, блокировки, живой счёт, CSV', () => {
+  const lab = answerNet();
+  const initial = A.snapshot(lab.net);
+  const answerRef = NL.Network.deserialize(initial);
+  const items = [
+    A.customItem({ kind: 'cfg', device: 'R1', section: 'interface GigabitEthernet0/0', line: 'ip address 10.{{NET}}.0.1 255.255.255.0', points: 2, hint: 'адрес на G0/0: 10.{{NET}}.0.1/24' }, answerRef),
+    A.customItem({ kind: 'host', device: 'PC1', field: 'ip', value: '10.{{NET}}.0.10' }, answerRef),
+    A.customItem({ kind: 'port', device: 'R1', port: 'GigabitEthernet0/2', up: false }, answerRef),
+  ];
+  assert.equal(items[1].key, 'set|PC1|ifaces/FastEthernet0/ip');
+  assert.throws(() => A.customItem({ kind: 'cfg', device: 'R1', line: '' }, answerRef), /строку/);
+  const task = A.build({ title: 'Переменные', instructions: 'Сеть 10.{{NET}}.0.0/24', answer: initial, initial, items,
+    tests: [{ from: 'PC1', to: '10.{{NET}}.0.1', expect: true, points: 3 }],
+    vars: [{ name: 'NET', kind: 'range', min: 20, max: 20 }, { name: 'bad name', kind: 'range', min: 1, max: 2 }, { name: 'SITE', kind: 'list', list: 'A, B' }],
+    locks: { cli: true, add: true, bogus: true }, live: true });
+  assert.deepEqual(task.locks, ['add', 'cli']);
+  assert.equal(task.live, true);
+  assert.deepEqual(A.open(task).vars.map((v) => v.name), ['NET', 'SITE'], 'неверное имя переменной отброшено');
+  const student = NL.Network.deserialize(initial);
+  student.task = task;
+  assert.equal(A.ensureValues(task, () => 0.99), true);
+  assert.equal(task.values.NET, '20');
+  assert.equal(task.values.SITE, 'B');
+  assert.equal(A.ensureValues(task), false, 'значения выбираются один раз');
+  assert.equal(A.subst(task.instructions, task.values), 'Сеть 10.20.0.0/24');
+
+  let r = A.check(student, task, { tests: false });
+  assert.equal(r.tests.length, 0);
+  assert.equal(r.total, 2 + 1 + 1 + 3, 'баллы проверок связи учитываются и без их запуска');
+  const f = r.items.find((x) => x.label.startsWith('ip address'));
+  assert.equal(f.label, 'ip address 10.20.0.1 255.255.255.0');
+  assert.equal(f.hint, 'адрес на G0/0: 10.20.0.1/24');
+
+  cli(student.findByName('R1'), ['enable', 'conf t', 'interface g0/0', 'ip address 10.20.0.1 255.255.255.0', 'exit', 'interface g0/2', 'shutdown', 'end']);
+  student.findByName('PC1').setStatic(U.parseIp('10.20.0.10'), U.maskFromPrefix(24), U.parseIp('10.20.0.1'), null);
+  student.runUntilIdle();
+  r = A.check(student, task);
+  assert.deepEqual(r.items.filter((x) => !x.ok).map((x) => x.label), []);
+  assert.equal(r.tests[0].to, '10.20.0.1');
+  assert.equal(r.tests[0].ok, true);
+  assert.equal(r.percent, 100);
+
+  // CSV для Excel
+  task.student = 'Иванов Пётр';
+  const csv = A.resultCsv(task, r, { date: '25.09.2026' });
+  assert.ok(csv.startsWith('﻿'));
+  assert.match(csv, /"Ученик";"Иванов Пётр"/);
+  assert.match(csv, /"Процент";"100"/);
+  assert.match(csv, /"R1 \/ Конфигурация \/ interface GigabitEthernet0\/0";"ip address 10\.20\.0\.1 255\.255\.255\.0";"2";"да"/);
+
+  // значения, имя ученика и ограничения сохраняются в файле
+  const n2 = NL.Network.deserialize(JSON.parse(JSON.stringify(student.serialize())));
+  assert.equal(n2.task.values.NET, '20');
+  assert.equal(n2.task.student, 'Иванов Пётр');
+  assert.deepEqual(n2.task.locks, ['add', 'cli']);
+  const d = A.draft(n2.task);
+  assert.equal(d.locks.cli, true);
+  assert.equal(d.vars.length, 2);
+  assert.equal(d.items.filter((x) => x.custom).length, 3);
+});
+
+test('Задание: новая попытка — свои значения переменных, сохранённая работа — прежние', () => {
+  const lab = answerNet();
+  const initial = A.snapshot(lab.net);
+  const task = A.build({ title: 'T', answer: initial, initial, items: [], vars: [{ name: 'N', kind: 'range', min: 1, max: 100 }] });
+  assert.equal(task.fresh, true);
+  task.values = { N: '5' }; // автор проверял задание и сохранил файл
+  const file = JSON.parse(JSON.stringify(Object.assign(NL.Network.deserialize(initial).serialize(), { task })));
+  const student = NL.Network.deserialize(file);
+  assert.equal(A.startAttempt(student.task, () => 0.5), true);
+  assert.equal(student.task.values.N, '51', 'ученик получил своё значение, а не авторское');
+  assert.equal(student.task.fresh, undefined);
+  const again = NL.Network.deserialize(JSON.parse(JSON.stringify(student.serialize())));
+  assert.equal(A.startAttempt(again.task, () => 0.1), false);
+  assert.equal(again.task.values.N, '51', 'продолжение работы — те же значения');
+});
