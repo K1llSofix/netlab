@@ -1,6 +1,8 @@
 # Тесты и сборка NetLab для Windows, macOS и Linux.
 # Push в main / pull request — тесты и сборка без публикации (установщики — в артефактах запуска).
-# Тег v* (например v1.4.0) — сборка и загрузка установщиков в релиз GitHub.
+# Тег v* (например v1.4.0) — сборка, загрузка установщиков в релиз GitHub и описание релиза из build/release-notes.md.
+# Ручной запуск (Actions → build → Run workflow): можно выбрать платформу и «Опубликовать» — файлы попадут
+# в релиз v<версия из package.json>, даже если он уже опубликован (например, досборка macOS).
 name: build
 
 on:
@@ -9,6 +11,16 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Платформа'
+        type: choice
+        options: [all, win, mac, linux]
+        default: all
+      publish:
+        description: 'Опубликовать в релиз v<версия>'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -32,29 +44,40 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            target: --win
+            key: win
           - os: macos-latest
-            target: --mac
+            key: mac
           - os: ubuntu-latest
-            target: --linux
+            key: linux
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.key
       - uses: actions/setup-node@v4
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.key
         with:
           node-version: 22
           cache: npm
       - run: npm ci
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.key
       - name: Сборка
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.key
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # без сертификата Apple: сборка macOS не подписывается
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then PUBLISH=always; else PUBLISH=never; fi
-          npx electron-builder ${{ matrix.target }} --publish "$PUBLISH"
+          PUBLISH=never
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then PUBLISH=always; fi
+          if [[ "${{ github.event_name }}" == workflow_dispatch && "${{ inputs.publish }}" == true ]]; then
+            PUBLISH=always
+            # релиз мог быть опубликован раньше чем 2 часа назад — всё равно загрузить файлы
+            export EP_GH_IGNORE_TIME=true
+          fi
+          npx electron-builder --${{ matrix.key }} --publish "$PUBLISH"
       - uses: actions/upload-artifact@v4
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.key
         with:
           name: netlab-${{ runner.os }}
           path: |
@@ -66,3 +89,17 @@ jobs:
             dist/latest*.yml
           if-no-files-found: ignore
           retention-days: 14
+
+  notes:
+    # описание релиза на GitHub — из build/release-notes.md (как окно «Что нового» в программе)
+    needs: dist
+    if: always() && (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Описание релиза
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          gh release edit "v$VERSION" --title "$VERSION" --notes-file build/release-notes.md
